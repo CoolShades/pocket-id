@@ -44,6 +44,16 @@ type AppConfig struct {
 	AllowUserSignups          AppConfigVariable `key:"allowUserSignups,public"`    // Public
 	SignupDefaultUserGroupIDs AppConfigVariable `key:"signupDefaultUserGroupIDs"`
 	SignupDefaultCustomClaims AppConfigVariable `key:"signupDefaultCustomClaims"`
+	// Dynamic background
+	DynamicBackgroundEnabled      AppConfigVariable `key:"dynamicBackgroundEnabled,public"`      // Public
+	DynamicBackgroundTheme        AppConfigVariable `key:"dynamicBackgroundTheme,public"`        // Public
+	DynamicBackgroundSeed         AppConfigVariable `key:"dynamicBackgroundSeed,public"`         // Public
+	DynamicBackgroundDensity      AppConfigVariable `key:"dynamicBackgroundDensity,public"`      // Public
+	DynamicBackgroundFlowSpeed    AppConfigVariable `key:"dynamicBackgroundFlowSpeed,public"`    // Public
+	DynamicBackgroundNoiseScale   AppConfigVariable `key:"dynamicBackgroundNoiseScale,public"`   // Public
+	DynamicBackgroundTurbulence   AppConfigVariable `key:"dynamicBackgroundTurbulence,public"`   // Public
+	DynamicBackgroundTrailFade    AppConfigVariable `key:"dynamicBackgroundTrailFade,public"`    // Public
+	DynamicBackgroundParticleSize AppConfigVariable `key:"dynamicBackgroundParticleSize,public"` // Public
 	// Internal
 	InstanceID AppConfigVariable `key:"instanceId,internal"` // Internal
 	// Email

@@ -8,10 +8,14 @@
 	import { m } from '$lib/paraglide/messages';
 	import appConfigStore from '$lib/stores/application-configuration-store';
 	import { cachedBackgroundImage } from '$lib/utils/cached-image-util';
+	import { applyAccentColor } from '$lib/utils/accent-color-util';
 	import { cn } from '$lib/utils/style';
-	import { onMount, type Snippet } from 'svelte';
+	import { mode } from 'mode-watcher';
+	import { onDestroy, onMount, type Snippet } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { fade } from 'svelte/transition';
+	import DynamicBackground from './dynamic-background/dynamic-background.svelte';
+	import { getThemeByName, type DynamicBackgroundConfig } from './dynamic-background/themes';
 	import * as Card from './ui/card';
 
 	let {
@@ -38,6 +42,57 @@
 	});
 
 	const isDesktop = new MediaQuery('min-width: 1024px');
+
+	let canUseDynamic = $state(false);
+	let dynamicFailed = $state(false);
+
+	onMount(() => {
+		const offscreenOk =
+			typeof HTMLCanvasElement !== 'undefined' &&
+			'transferControlToOffscreen' in HTMLCanvasElement.prototype;
+		const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const update = () => {
+			canUseDynamic = offscreenOk && !mql.matches;
+		};
+		update();
+		mql.addEventListener('change', update);
+		return () => mql.removeEventListener('change', update);
+	});
+
+	let useDynamic = $derived(
+		$appConfigStore.dynamicBackgroundEnabled &&
+			!$appConfigStore.disableAnimations &&
+			canUseDynamic &&
+			!dynamicFailed
+	);
+
+	let dynamicConfig = $derived<DynamicBackgroundConfig>({
+		theme: $appConfigStore.dynamicBackgroundTheme,
+		seed: $appConfigStore.dynamicBackgroundSeed,
+		density: $appConfigStore.dynamicBackgroundDensity,
+		flowSpeed: $appConfigStore.dynamicBackgroundFlowSpeed,
+		noiseScale: $appConfigStore.dynamicBackgroundNoiseScale,
+		turbulence: $appConfigStore.dynamicBackgroundTurbulence,
+		trailFade: $appConfigStore.dynamicBackgroundTrailFade,
+		particleSize: $appConfigStore.dynamicBackgroundParticleSize
+	});
+
+	// When dynamic background is active on the login page, temporarily swap
+	// the accent color to one that matches the selected theme. Revert to the
+	// admin-saved accentColor when dynamic bg is off or the component unmounts.
+	$effect(() => {
+		if (useDynamic) {
+			const theme = getThemeByName($appConfigStore.dynamicBackgroundTheme);
+			applyAccentColor(theme.accent);
+		} else {
+			applyAccentColor($appConfigStore.accentColor);
+		}
+	});
+
+	onDestroy(() => {
+		applyAccentColor($appConfigStore.accentColor);
+	});
+
 	let alternativeSignInButton = $state({
 		href: '/login/alternative',
 		label: m.alternative_sign_in_methods()
@@ -58,14 +113,14 @@
 	});
 </script>
 
-{#if backgroundImageExists === undefined}
+{#if backgroundImageExists === undefined && !useDynamic}
 	<div class="bg-background h-screen"></div>
 {:else if isDesktop.current}
 	<div in:fade={{ duration: 150 }} class="h-screen items-center overflow-hidden text-center">
 		<div
 			class="relative z-10 flex h-full p-16 {cn(
 				showAlternativeSignInMethodButton && 'pb-0',
-				backgroundImageExists && 'w-[650px] 2xl:w-[800px]'
+				(backgroundImageExists || useDynamic) && 'w-[650px] 2xl:w-[800px]'
 			)}"
 		>
 			<div class="flex h-full w-full flex-col overflow-hidden">
@@ -85,7 +140,19 @@
 			</div>
 		</div>
 
-		{#if backgroundImageExists}
+		{#if useDynamic}
+			<!-- Dynamic background -->
+			<div
+				class="absolute top-0 right-0 left-500px bottom-0 z-0 m-6 overflow-hidden rounded-[40px]"
+			>
+				<DynamicBackground
+					config={dynamicConfig}
+					mode={mode.current ?? 'dark'}
+					class="h-full w-full"
+					onfallback={() => (dynamicFailed = true)}
+				/>
+			</div>
+		{:else if backgroundImageExists}
 			<!-- Background image -->
 			<div
 				class="absolute top-0 right-0 left-500px bottom-0 z-0 overflow-hidden rounded-[40px] m-6"
@@ -103,12 +170,24 @@
 {:else}
 	<div
 		class="flex h-screen items-center justify-center bg-cover bg-center text-center"
-		style="background-image: url({cachedBackgroundImage.getUrl()});"
+		style={useDynamic || !backgroundImageExists
+			? ''
+			: `background-image: url(${cachedBackgroundImage.getUrl()});`}
 	>
+		{#if useDynamic}
+			<div class="fixed inset-0 -z-10">
+				<DynamicBackground
+					config={dynamicConfig}
+					mode={mode.current ?? 'dark'}
+					class="h-full w-full"
+					onfallback={() => (dynamicFailed = true)}
+				/>
+			</div>
+		{/if}
 		<Card.Root
 			class={{
 				'mx-3 w-full max-w-md': true,
-				'bg-transparent border-0': !backgroundImageExists
+				'bg-transparent border-0': !backgroundImageExists || useDynamic
 			}}
 		>
 			<Card.CardContent

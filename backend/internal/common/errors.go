@@ -169,6 +169,16 @@ func (e *WrongFileTypeError) Error() string {
 }
 func (e *WrongFileTypeError) HttpStatusCode() int { return http.StatusBadRequest }
 
+type InvalidConfigValueError struct {
+	Key    string
+	Reason string
+}
+
+func (e *InvalidConfigValueError) Error() string {
+	return fmt.Sprintf("Invalid value for config key '%s': %s", e.Key, e.Reason)
+}
+func (e *InvalidConfigValueError) HttpStatusCode() int { return http.StatusBadRequest }
+
 type MissingSessionIdError struct{}
 
 func (e *MissingSessionIdError) Error() string {

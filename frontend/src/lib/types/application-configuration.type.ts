@@ -13,6 +13,15 @@ export type AppConfig = {
 	uiConfigDisabled: boolean;
 	accentColor: string;
 	requireUserEmail: boolean;
+	dynamicBackgroundEnabled: boolean;
+	dynamicBackgroundTheme: string;
+	dynamicBackgroundSeed: number;
+	dynamicBackgroundDensity: number;
+	dynamicBackgroundFlowSpeed: number;
+	dynamicBackgroundNoiseScale: number;
+	dynamicBackgroundTurbulence: number;
+	dynamicBackgroundTrailFade: number;
+	dynamicBackgroundParticleSize: number;
 };
 
 export type AllAppConfig = AppConfig & {

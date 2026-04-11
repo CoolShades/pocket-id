@@ -173,4 +173,40 @@ test.describe('Update application images', () => {
 			'File must be of type .png or .jpg/jpeg'
 		);
 	});
+
+	test('should configure dynamic background', async ({ page }) => {
+		await page.getByLabel('Enable dynamic background').click();
+		await page.getByRole('button', { name: 'Ocean', exact: true }).click();
+		await page.getByRole('button', { name: 'Save' }).last().click();
+
+		await expect(page.locator('[data-type="success"]')).toHaveText(
+			'Application configuration updated successfully'
+		);
+
+		await page.reload();
+		await page.getByRole('button', { name: 'Expand card' }).nth(4).click();
+		await expect(page.getByLabel('Enable dynamic background')).toBeChecked();
+
+		// Verify the login page renders a canvas when enabled
+		await page.context().clearCookies();
+		await page.goto('/login');
+		await expect(page.locator('canvas')).toBeVisible();
+	});
+
+	test('should reject out-of-range dynamic background values via API', async ({ request }) => {
+		const res = await request.put('/api/application-configuration', {
+			data: {
+				dynamicBackgroundEnabled: 'true',
+				dynamicBackgroundTheme: 'Ember',
+				dynamicBackgroundSeed: '12345',
+				dynamicBackgroundDensity: '9999', // out of range
+				dynamicBackgroundFlowSpeed: '1',
+				dynamicBackgroundNoiseScale: '0.005',
+				dynamicBackgroundTurbulence: '2',
+				dynamicBackgroundTrailFade: '0.005',
+				dynamicBackgroundParticleSize: '1.5'
+			}
+		});
+		expect(res.status()).toBe(400);
+	});
 });

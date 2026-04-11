@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -69,6 +70,16 @@ func (s *AppConfigService) getDefaultDbConfig() *model.AppConfig {
 		SignupDefaultUserGroupIDs: model.AppConfigVariable{Value: "[]"},
 		SignupDefaultCustomClaims: model.AppConfigVariable{Value: "[]"},
 		AccentColor:               model.AppConfigVariable{Value: "default"},
+		// Dynamic background
+		DynamicBackgroundEnabled:      model.AppConfigVariable{Value: "false"},
+		DynamicBackgroundTheme:        model.AppConfigVariable{Value: "Neon"},
+		DynamicBackgroundSeed:         model.AppConfigVariable{Value: "300177"},
+		DynamicBackgroundDensity:      model.AppConfigVariable{Value: "0.0376"},
+		DynamicBackgroundFlowSpeed:    model.AppConfigVariable{Value: "2.36"},
+		DynamicBackgroundNoiseScale:   model.AppConfigVariable{Value: "0.015"},
+		DynamicBackgroundTurbulence:   model.AppConfigVariable{Value: "8"},
+		DynamicBackgroundTrailFade:    model.AppConfigVariable{Value: "0.355"},
+		DynamicBackgroundParticleSize: model.AppConfigVariable{Value: "236"},
 		// Internal
 		InstanceID: model.AppConfigVariable{Value: ""},
 		// Email
@@ -161,6 +172,10 @@ func (s *AppConfigService) updateAppConfigUpdateDatabase(ctx context.Context, tx
 func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppConfigUpdateDto) ([]model.AppConfigVariable, error) {
 	if common.EnvConfig.UiConfigDisabled {
 		return nil, &common.UiConfigDisabledError{}
+	}
+
+	if err := validateDynamicBackground(input); err != nil {
+		return nil, err
 	}
 
 	// Start the transaction
@@ -438,5 +453,39 @@ func (s *AppConfigService) initInstanceID(ctx context.Context) error {
 		return fmt.Errorf("failed to update instance ID in the database: %w", err)
 	}
 
+	return nil
+}
+
+// validateDynamicBackground enforces numeric bounds on the dynamic background
+// parameters. The DTO's binding tags ensure values are numeric strings; this
+// function clamps them to safe ranges matching the frontend prototype so an
+// admin (or API caller) cannot request unbounded particle counts.
+func validateDynamicBackground(input dto.AppConfigUpdateDto) error {
+	checks := []struct {
+		key   string
+		value string
+		min   float64
+		max   float64
+	}{
+		{"dynamicBackgroundSeed", input.DynamicBackgroundSeed, 1, 4294967295},
+		{"dynamicBackgroundDensity", input.DynamicBackgroundDensity, 0.0001, 0.19},
+		{"dynamicBackgroundFlowSpeed", input.DynamicBackgroundFlowSpeed, 0.01, 8.26},
+		{"dynamicBackgroundNoiseScale", input.DynamicBackgroundNoiseScale, 0.0001, 0.053},
+		{"dynamicBackgroundTurbulence", input.DynamicBackgroundTurbulence, 1, 28},
+		{"dynamicBackgroundTrailFade", input.DynamicBackgroundTrailFade, 0.005, 0.89},
+		{"dynamicBackgroundParticleSize", input.DynamicBackgroundParticleSize, 0.5, 826},
+	}
+	for _, c := range checks {
+		v, err := strconv.ParseFloat(c.value, 64)
+		if err != nil {
+			return &common.InvalidConfigValueError{Key: c.key, Reason: "must be numeric"}
+		}
+		if v < c.min || v > c.max {
+			return &common.InvalidConfigValueError{
+				Key:    c.key,
+				Reason: fmt.Sprintf("must be between %v and %v", c.min, c.max),
+			}
+		}
+	}
 	return nil
 }

@@ -524,5 +524,21 @@
 	"email_verification_sent": "Verification email sent successfully.",
 	"emails_verified_by_default": "Emails verified by default",
 	"emails_verified_by_default_description": "When enabled, users' email addresses will be marked as verified by default upon signup or when their email address is changed.",
-	"user_has_no_passkeys_yet": "This user has no passkeys yet."
+	"user_has_no_passkeys_yet": "This user has no passkeys yet.",
+	"dynamic_background": "Dynamic Background",
+	"enable_dynamic_background": "Enable dynamic background",
+	"dynamic_background_description": "Replaces the login page background image with a live flow-field animation.",
+	"customise_pattern": "Customise Pattern",
+	"theme": "Theme",
+	"seed": "Seed",
+	"particle_density": "Particle density",
+	"flow_speed": "Flow speed",
+	"noise_scale": "Noise scale",
+	"turbulence": "Turbulence",
+	"trail_fade": "Trail fade",
+	"particle_size": "Particle size",
+	"reset_to_defaults": "Reset to defaults",
+	"prev": "Prev",
+	"next": "Next",
+	"random": "Random"
 }

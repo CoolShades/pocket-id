@@ -15,6 +15,7 @@
 		Users
 	} from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
+	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
 	import AppConfigGeneralForm from './forms/app-config-general-form.svelte';
 	import AppConfigLdapForm from './forms/app-config-ldap-form.svelte';
@@ -108,7 +109,9 @@
 		title={m.general()}
 		defaultExpanded
 	>
-		<AppConfigGeneralForm {appConfig} callback={updateAppConfig} />
+		{#key appConfig.accentColor}
+			<AppConfigGeneralForm {appConfig} callback={updateAppConfig} />
+		{/key}
 	</CollapsibleCard>
 </div>
 
@@ -153,5 +156,7 @@
 		description={m.configure_application_images()}
 	>
 		<UpdateApplicationImages callback={updateImages} />
+		<hr class="border-border my-6" />
+		<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
 	</CollapsibleCard>
 </div>
