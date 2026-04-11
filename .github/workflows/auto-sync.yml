@@ -1,0 +1,113 @@
+name: Auto-sync with upstream
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: "Feature branch to merge main into"
+        required: false
+        default: "feat/dynamic-background"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: pocket-id/pocket-id
+  TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/dynamic-background' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream main --tags
+
+      - name: Sync origin/main from upstream/main
+        run: |
+          git checkout main
+          if git merge-base --is-ancestor origin/main upstream/main; then
+            # Fast-forward is possible — origin/main is strictly behind upstream
+            git merge --ff-only upstream/main
+          else
+            # origin/main has diverged (expected: this workflow file lives here).
+            # Perform a real merge so both histories are preserved.
+            git merge --no-edit upstream/main || {
+              echo "::error::Conflict merging upstream/main into origin/main. Resolve manually."
+              exit 1
+            }
+          fi
+          git push origin main
+
+      - name: Attempt merge of main into ${{ env.TARGET_BRANCH }}
+        id: merge
+        run: |
+          git checkout ${{ env.TARGET_BRANCH }}
+          git pull --ff-only origin ${{ env.TARGET_BRANCH }} || true
+          if git merge --no-edit main; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      - name: Push merged target branch
+        if: steps.merge.outputs.status == 'clean'
+        run: |
+          if git diff --quiet origin/${{ env.TARGET_BRANCH }} HEAD; then
+            echo "No new commits to push — already up to date."
+            exit 0
+          fi
+          git push origin ${{ env.TARGET_BRANCH }}
+
+      - name: Open sync-conflict PR
+        if: steps.merge.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          BRANCH="sync-conflict/${DATE}"
+          git checkout -B "$BRANCH" ${{ env.TARGET_BRANCH }}
+          # Re-do the merge so the conflict markers land on the sync-conflict branch
+          git merge --no-edit main || true
+          git add -A
+          git commit -m "WIP: sync conflict from main into ${{ env.TARGET_BRANCH }} on ${DATE}
+
+          This commit contains the merge conflict markers. Resolve them, then
+          merge this PR into ${{ env.TARGET_BRANCH }}."
+          git push -u origin "$BRANCH" --force
+          gh pr create \
+            --base ${{ env.TARGET_BRANCH }} \
+            --head "$BRANCH" \
+            --title "auto-sync: resolve conflicts from main into ${{ env.TARGET_BRANCH }} (${DATE})" \
+            --body "The daily auto-sync hit a merge conflict bringing **upstream main** into **${{ env.TARGET_BRANCH }}**.
+
+          ### Resolve locally
+
+          \`\`\`bash
+          git fetch origin
+          git checkout ${BRANCH}
+          # resolve conflict markers in the affected files
+          git add -A
+          git commit --amend --no-edit
+          git push --force-with-lease
+          \`\`\`
+
+          Then merge this PR." \
+            --label "sync-conflict" || \
+          echo "::warning::PR may already exist for today's sync. Check the pull requests tab."
