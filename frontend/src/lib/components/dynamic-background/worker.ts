@@ -197,6 +197,7 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let W = 0,
 	H = 0;
 let gen = 0;
+let startMs = 0; // performance.now() at init — keeps noise time relative so it starts at 0
 
 // Animation state machine driven by activate/deactivate messages from the
 // Svelte host. While the user is active (cursor on page + window focused +
@@ -350,6 +351,7 @@ function init(): void {
 	if (!ctx) return;
 	gen++;
 	speedFactor = 0;
+	startMs = performance.now();
 	allocateParticles();
 	ctx.fillStyle = `rgb(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]})`;
 	ctx.fillRect(0, 0, W, H);
@@ -424,8 +426,9 @@ function startLoop(): void {
 		ctx.fillRect(0, 0, W, H);
 		if (nowMs - lastGridMs >= GRID_REFRESH_MS) {
 			// Old constant was frame * 0.002; at 60fps that's 0.12 per second.
-			// Replicate the same per-second rate via nowMs * 0.00012.
-			computeGrid(nowMs * 0.00012);
+			// Use relative time from init so the noise field starts at 0 (matching
+			// the computeGrid(0) call in init) and evolves smoothly.
+			computeGrid((nowMs - startMs) * 0.00012);
 			lastGridMs = nowMs;
 		}
 		for (let b = 0; b < NUM_BUCKETS; b++) buckets[b].length = 0;
@@ -463,18 +466,17 @@ function startLoop(): void {
 				py[i] = 0;
 				vy[i] = Math.abs(vy[i]);
 			}
-			buckets[pColorIdx[i] * NUM_ALPHA + pAlphaIdx[i]].push(i);
+			// Only bucket particles that actually moved — stationary ones would
+			// stamp ink at the same spot every frame, accumulating brightness
+			// while trailFade is low during decel.
+			const dx = px[i] - ppX[i];
+			const dy = py[i] - ppY[i];
+			if (dx * dx + dy * dy > 0.25) {
+				buckets[pColorIdx[i] * NUM_ALPHA + pAlphaIdx[i]].push(i);
+			}
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
-		// Scale stroke alpha by speedFactor too. Without this, stationary or
-		// near-stationary particles (during decel or at frozen stop) re-paint
-		// the same lineWidth-wide round cap every frame, accumulating ink at
-		// a constant rate while trailFade drops to zero — causing the "gets
-		// brighter when stopped, darker when moving" effect. Scaling stroke
-		// alpha matches ink deposition to motion so equilibrium brightness
-		// stays consistent across all speeds, including full stop.
-		ctx.globalAlpha = speedFactor;
 		for (let b = 0; b < NUM_BUCKETS; b++) {
 			const bkt = buckets[b];
 			if (!bkt.length) continue;
@@ -487,7 +489,6 @@ function startLoop(): void {
 			}
 			ctx.stroke();
 		}
-		ctx.globalAlpha = 1;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -532,7 +533,7 @@ self.onmessage = (e: MessageEvent<IncomingMessage>): void => {
 		} else if (d.key === 'flowSpeed') {
 			rescaleFlowSpeed();
 		} else if (d.key === 'noiseScale' || d.key === 'turbulence') {
-			computeGrid(performance.now() * 0.00012);
+			computeGrid((performance.now() - startMs) * 0.00012);
 		}
 		// trailFade / particleSize: read per-frame, no action needed
 	} else if (d.type === 'theme') {
