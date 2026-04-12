@@ -470,6 +470,11 @@ function startLoop(): void {
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
+		// During decel, scale stroke alpha with speedFactor so ink deposition
+		// drops in step with the fading rate. This prevents slow/stationary
+		// particles from accumulating saturated color as trailFade → 0.
+		// During ramp-up and full, keep full alpha so trails build organically.
+		if (phase === 'decel') ctx.globalAlpha = speedFactor;
 		for (let b = 0; b < NUM_BUCKETS; b++) {
 			const bkt = buckets[b];
 			if (!bkt.length) continue;
@@ -482,6 +487,7 @@ function startLoop(): void {
 			}
 			ctx.stroke();
 		}
+		if (phase === 'decel') ctx.globalAlpha = 1;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
