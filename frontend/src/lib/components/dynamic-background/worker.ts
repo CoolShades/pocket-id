@@ -191,13 +191,6 @@ let W = 0,
 let gen = 0;
 let startMs = 0; // performance.now() at init — keeps noise time relative so it starts at 0
 
-// The animation runs continuously at full speed once initialized. A short
-// ramp-up on first init eases the particles in, then the loop runs forever.
-type AnimPhase = 'ramp-up' | 'full';
-let phase: AnimPhase = 'full';
-let phaseStartMs = 0; // wall-clock timestamp when the current phase began
-let speedFactor = 0; // current effective speed, 0..1
-
 let px: Float32Array, py: Float32Array;
 let vx: Float32Array, vy: Float32Array;
 let prevX: Float32Array, prevY: Float32Array;
@@ -208,11 +201,6 @@ let pAlphaIdx: Uint8Array;
 let count = 0;
 
 const CELL = 20;
-// Time-based durations (wall-clock ms). Frame-counted durations would run
-// twice as fast on 120Hz displays (common on modern phones), halving all
-// the animation's tuning. Using performance.now() deltas keeps the feel
-// identical across 60Hz, 90Hz, 120Hz, and 144Hz refresh rates.
-const RAMP_UP_MS = 3000; //  3s
 const GRID_REFRESH_MS = 500; // recompute flow field every 500ms
 const NUM_COLORS = 4;
 const NUM_ALPHA = 4;
@@ -336,18 +324,11 @@ function allocateParticles(): void {
 function init(): void {
 	if (!ctx) return;
 	gen++;
-	speedFactor = 0;
 	startMs = performance.now();
 	allocateParticles();
 	ctx.fillStyle = `rgb(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]})`;
 	ctx.fillRect(0, 0, W, H);
-	enterPhase('ramp-up');
 	startLoop();
-}
-
-function enterPhase(next: AnimPhase): void {
-	phase = next;
-	phaseStartMs = performance.now();
 }
 
 function startLoop(): void {
@@ -358,17 +339,11 @@ function startLoop(): void {
 	const tick = (): void => {
 		if (myGen !== gen || !ctx) return;
 		const nowMs = performance.now();
-		const phaseElapsedMs = nowMs - phaseStartMs;
 		// dt in "60fps frame units": 1 on a 60Hz display, 0.5 on 120Hz, 2 on
 		// 30Hz. Clamped to 3 so a returning-from-background tab doesn't
 		// teleport particles on the first frame after a long pause.
 		const dt = Math.min(3, (nowMs - lastTickMs) / (1000 / 60));
 		lastTickMs = nowMs;
-		// Ramp-up eases particles in over RAMP_UP_MS, then full speed forever.
-		if (phase === 'ramp-up') {
-			speedFactor = Math.min(1, phaseElapsedMs / RAMP_UP_MS);
-			if (speedFactor >= 1) enterPhase('full');
-		}
 		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade})`;
 		ctx.fillRect(0, 0, W, H);
 		if (nowMs - lastGridMs >= GRID_REFRESH_MS) {
@@ -378,12 +353,11 @@ function startLoop(): void {
 		for (let b = 0; b < NUM_BUCKETS; b++) buckets[b].length = 0;
 		for (let i = 0; i < count; i++) {
 			const angle = sampleGrid(px[i], py[i]);
-			vx[i] += Math.cos(angle) * 0.15 * speedFactor * dt;
-			vy[i] += Math.sin(angle) * 0.15 * speedFactor * dt;
+			vx[i] += Math.cos(angle) * 0.15 * dt;
+			vy[i] += Math.sin(angle) * 0.15 * dt;
 			const spd = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
-			const ms = pMaxSpd[i] * speedFactor;
-			if (spd > ms) {
-				const scale = ms > 0 ? ms / spd : 0;
+			if (spd > pMaxSpd[i]) {
+				const scale = pMaxSpd[i] / spd;
 				vx[i] *= scale;
 				vy[i] *= scale;
 			}
