@@ -35,16 +35,8 @@ type ParamMessage = {
 };
 type ThemeMessage = { type: 'theme'; bg: RGB; palette: [RGB, RGB, RGB, RGB] };
 type SeedMessage = { type: 'seed'; value: number };
-type ActivateMessage = { type: 'activate' };
-type DeactivateMessage = { type: 'deactivate' };
 
-type IncomingMessage =
-	| InitMessage
-	| ParamMessage
-	| ThemeMessage
-	| SeedMessage
-	| ActivateMessage
-	| DeactivateMessage;
+type IncomingMessage = InitMessage | ParamMessage | ThemeMessage | SeedMessage;
 
 // ── SIMPLEX 3D NOISE ──────────────────────────────────────────────────
 const PERM = new Uint8Array(512);
@@ -199,16 +191,11 @@ let W = 0,
 let gen = 0;
 let startMs = 0; // performance.now() at init — keeps noise time relative so it starts at 0
 
-// Animation state machine driven by activate/deactivate messages from the
-// Svelte host. While the user is active (cursor on page + window focused +
-// tab visible) the worker stays in 'full' forever. When the user goes idle
-// the host sends deactivate → 'decel' → 'sleep'. On re-activation the host
-// sends activate → 'ramp-up' → 'full', with the ramp starting from the
-// current speedFactor so there's no jump if we were mid-decel.
-type AnimPhase = 'ramp-up' | 'full' | 'decel' | 'sleep';
-let phase: AnimPhase = 'sleep';
+// The animation runs continuously at full speed once initialized. A short
+// ramp-up on first init eases the particles in, then the loop runs forever.
+type AnimPhase = 'ramp-up' | 'full';
+let phase: AnimPhase = 'full';
 let phaseStartMs = 0; // wall-clock timestamp when the current phase began
-let phaseStartSpeed = 0; // speedFactor at the start of the current phase
 let speedFactor = 0; // current effective speed, 0..1
 
 let px: Float32Array, py: Float32Array;
@@ -226,7 +213,6 @@ const CELL = 20;
 // the animation's tuning. Using performance.now() deltas keeps the feel
 // identical across 60Hz, 90Hz, 120Hz, and 144Hz refresh rates.
 const RAMP_UP_MS = 3000; //  3s
-const DECEL_MS = 10000; // 10s
 const GRID_REFRESH_MS = 500; // recompute flow field every 500ms
 const NUM_COLORS = 4;
 const NUM_ALPHA = 4;
@@ -362,24 +348,6 @@ function init(): void {
 function enterPhase(next: AnimPhase): void {
 	phase = next;
 	phaseStartMs = performance.now();
-	phaseStartSpeed = speedFactor;
-}
-
-// Host reports the user is active again. From sleep/decel, kick off a new
-// ramp-up starting at whatever speed we currently have (so interrupting a
-// decel mid-way doesn't jump back to zero). From ramp-up/full, do nothing.
-function activate(): void {
-	if (phase === 'ramp-up' || phase === 'full') return;
-	const wasSleeping = phase === 'sleep';
-	enterPhase('ramp-up');
-	if (wasSleeping) startLoop();
-}
-
-// Host reports the user is idle. Begin the decel from whatever speed we
-// currently have, so activating back mid-decel is symmetric.
-function deactivate(): void {
-	if (phase === 'decel' || phase === 'sleep') return;
-	enterPhase('decel');
 }
 
 function startLoop(): void {
@@ -388,7 +356,7 @@ function startLoop(): void {
 	let lastGridMs = -Infinity;
 	let lastTickMs = performance.now();
 	const tick = (): void => {
-		if (myGen !== gen || phase === 'sleep' || !ctx) return;
+		if (myGen !== gen || !ctx) return;
 		const nowMs = performance.now();
 		const phaseElapsedMs = nowMs - phaseStartMs;
 		// dt in "60fps frame units": 1 on a 60Hz display, 0.5 on 120Hz, 2 on
@@ -396,40 +364,14 @@ function startLoop(): void {
 		// teleport particles on the first frame after a long pause.
 		const dt = Math.min(3, (nowMs - lastTickMs) / (1000 / 60));
 		lastTickMs = nowMs;
-		// Advance the phase state machine based on wall-clock elapsed time —
-		// identical feel on 60Hz, 90Hz, 120Hz, 144Hz displays. The 'full'
-		// phase has no duration; it runs forever until the host sends
-		// deactivate.
+		// Ramp-up eases particles in over RAMP_UP_MS, then full speed forever.
 		if (phase === 'ramp-up') {
-			const t = Math.min(1, phaseElapsedMs / RAMP_UP_MS);
-			speedFactor = phaseStartSpeed + (1 - phaseStartSpeed) * t;
-			if (speedFactor >= 1) {
-				speedFactor = 1;
-				enterPhase('full');
-			}
-		} else if (phase === 'full') {
-			speedFactor = 1;
-		} else if (phase === 'decel') {
-			const t = Math.min(1, phaseElapsedMs / DECEL_MS);
-			speedFactor = phaseStartSpeed * (1 - t);
-			if (speedFactor <= 0.05) {
-				// Below 0.05 particle movement is sub-pixel and invisible.
-				// Freeze now to avoid ink accumulation from stationary dots.
-				speedFactor = 0;
-				enterPhase('sleep');
-				return;
-			}
+			speedFactor = Math.min(1, phaseElapsedMs / RAMP_UP_MS);
+			if (speedFactor >= 1) enterPhase('full');
 		}
-		// Scale trailFade by speedFactor so the canvas never washes faster
-		// than particles can redraw. At speedFactor 0 there's no fade at all
-		// (canvas frozen); at full speed the configured trailFade applies.
-		// This eliminates the wake flash and keeps decel visually coherent.
-		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade * speedFactor})`;
+		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade})`;
 		ctx.fillRect(0, 0, W, H);
 		if (nowMs - lastGridMs >= GRID_REFRESH_MS) {
-			// Old constant was frame * 0.002; at 60fps that's 0.12 per second.
-			// Use relative time from init so the noise field starts at 0 (matching
-			// the computeGrid(0) call in init) and evolves smoothly.
 			computeGrid((nowMs - startMs) * 0.00012);
 			lastGridMs = nowMs;
 		}
@@ -451,9 +393,6 @@ function startLoop(): void {
 			prevY[i] = py[i];
 			px[i] += vx[i] * dt;
 			py[i] += vy[i] * dt;
-			// Reflect at the edges instead of wrapping around. With large
-			// particle sizes the wrap-teleport was visible as a sudden
-			// disappear/reappear; bouncing keeps particles on-screen.
 			if (px[i] > W) {
 				px[i] = W;
 				vx[i] = -Math.abs(vx[i]);
@@ -472,15 +411,6 @@ function startLoop(): void {
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
-		// Below sf 0.3, particles are nearly stationary and stamp ink on the
-		// same pixels every frame while trailFade → 0 can't keep up → colours
-		// over-saturate. Scale stroke alpha down only in this narrow band so
-		// ink deposition tapers off in step with the fading. Above 0.3 the
-		// particles still move enough to spread their ink, so no scaling needed
-		// — this avoids the global canvas darkening that full-range scaling
-		// causes and keeps re-activation transitions smooth.
-		const needInkScale = phase === 'decel' && speedFactor < 0.3;
-		if (needInkScale) ctx.globalAlpha = speedFactor / 0.3;
 		for (let b = 0; b < NUM_BUCKETS; b++) {
 			const bkt = buckets[b];
 			if (!bkt.length) continue;
@@ -493,7 +423,6 @@ function startLoop(): void {
 			}
 			ctx.stroke();
 		}
-		if (needInkScale) ctx.globalAlpha = 1;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -548,9 +477,5 @@ self.onmessage = (e: MessageEvent<IncomingMessage>): void => {
 	} else if (d.type === 'seed') {
 		cfg.seed = d.value;
 		init();
-	} else if (d.type === 'activate') {
-		activate();
-	} else if (d.type === 'deactivate') {
-		deactivate();
 	}
 };
