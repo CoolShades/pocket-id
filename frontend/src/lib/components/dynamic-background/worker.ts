@@ -196,7 +196,6 @@ let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let W = 0,
 	H = 0;
-let frame = 0; // monotonic frame counter (used for the flow-field noise time)
 let gen = 0;
 
 // Animation state machine driven by activate/deactivate messages from the
@@ -207,7 +206,7 @@ let gen = 0;
 // current speedFactor so there's no jump if we were mid-decel.
 type AnimPhase = 'ramp-up' | 'full' | 'decel' | 'sleep';
 let phase: AnimPhase = 'sleep';
-let phaseFrame = 0; // frames since the current phase began
+let phaseStartMs = 0; // wall-clock timestamp when the current phase began
 let phaseStartSpeed = 0; // speedFactor at the start of the current phase
 let speedFactor = 0; // current effective speed, 0..1
 
@@ -221,10 +220,13 @@ let pAlphaIdx: Uint8Array;
 let count = 0;
 
 const CELL = 20;
-const GRID_REFRESH = 30;
-// Ramp/decel durations (full phase has no duration — runs until deactivate).
-const RAMP_UP_FRAMES = 180; //  3s @ 60fps
-const DECEL_FRAMES = 600; // 10s @ 60fps
+// Time-based durations (wall-clock ms). Frame-counted durations would run
+// twice as fast on 120Hz displays (common on modern phones), halving all
+// the animation's tuning. Using performance.now() deltas keeps the feel
+// identical across 60Hz, 90Hz, 120Hz, and 144Hz refresh rates.
+const RAMP_UP_MS = 3000; //  3s
+const DECEL_MS = 10000; // 10s
+const GRID_REFRESH_MS = 500; // recompute flow field every 500ms
 const NUM_COLORS = 4;
 const NUM_ALPHA = 4;
 const NUM_BUCKETS = NUM_COLORS * NUM_ALPHA;
@@ -347,7 +349,6 @@ function allocateParticles(): void {
 function init(): void {
 	if (!ctx) return;
 	gen++;
-	frame = 0;
 	speedFactor = 0;
 	allocateParticles();
 	ctx.fillStyle = `rgb(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]})`;
@@ -358,7 +359,7 @@ function init(): void {
 
 function enterPhase(next: AnimPhase): void {
 	phase = next;
-	phaseFrame = 0;
+	phaseStartMs = performance.now();
 	phaseStartSpeed = speedFactor;
 }
 
@@ -382,12 +383,23 @@ function deactivate(): void {
 function startLoop(): void {
 	if (!ctx) return;
 	const myGen = gen;
+	let lastGridMs = -Infinity;
+	let lastTickMs = performance.now();
 	const tick = (): void => {
 		if (myGen !== gen || phase === 'sleep' || !ctx) return;
-		// Advance the phase state machine. The 'full' phase has no duration —
-		// it runs forever until the host sends a deactivate message.
+		const nowMs = performance.now();
+		const phaseElapsedMs = nowMs - phaseStartMs;
+		// dt in "60fps frame units": 1 on a 60Hz display, 0.5 on 120Hz, 2 on
+		// 30Hz. Clamped to 3 so a returning-from-background tab doesn't
+		// teleport particles on the first frame after a long pause.
+		const dt = Math.min(3, (nowMs - lastTickMs) / (1000 / 60));
+		lastTickMs = nowMs;
+		// Advance the phase state machine based on wall-clock elapsed time —
+		// identical feel on 60Hz, 90Hz, 120Hz, 144Hz displays. The 'full'
+		// phase has no duration; it runs forever until the host sends
+		// deactivate.
 		if (phase === 'ramp-up') {
-			const t = Math.min(1, phaseFrame / RAMP_UP_FRAMES);
+			const t = Math.min(1, phaseElapsedMs / RAMP_UP_MS);
 			speedFactor = phaseStartSpeed + (1 - phaseStartSpeed) * t;
 			if (speedFactor >= 1) {
 				speedFactor = 1;
@@ -396,7 +408,7 @@ function startLoop(): void {
 		} else if (phase === 'full') {
 			speedFactor = 1;
 		} else if (phase === 'decel') {
-			const t = Math.min(1, phaseFrame / DECEL_FRAMES);
+			const t = Math.min(1, phaseElapsedMs / DECEL_MS);
 			speedFactor = phaseStartSpeed * (1 - t);
 			if (speedFactor <= 0) {
 				speedFactor = 0;
@@ -410,12 +422,17 @@ function startLoop(): void {
 		// This eliminates the wake flash and keeps decel visually coherent.
 		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade * speedFactor})`;
 		ctx.fillRect(0, 0, W, H);
-		if (frame % GRID_REFRESH === 0) computeGrid(frame * 0.002);
+		if (nowMs - lastGridMs >= GRID_REFRESH_MS) {
+			// Old constant was frame * 0.002; at 60fps that's 0.12 per second.
+			// Replicate the same per-second rate via nowMs * 0.00012.
+			computeGrid(nowMs * 0.00012);
+			lastGridMs = nowMs;
+		}
 		for (let b = 0; b < NUM_BUCKETS; b++) buckets[b].length = 0;
 		for (let i = 0; i < count; i++) {
 			const angle = sampleGrid(px[i], py[i]);
-			vx[i] += Math.cos(angle) * 0.15 * speedFactor;
-			vy[i] += Math.sin(angle) * 0.15 * speedFactor;
+			vx[i] += Math.cos(angle) * 0.15 * speedFactor * dt;
+			vy[i] += Math.sin(angle) * 0.15 * speedFactor * dt;
 			const spd = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
 			const ms = pMaxSpd[i] * speedFactor;
 			if (spd > ms) {
@@ -427,8 +444,8 @@ function startLoop(): void {
 			ppY[i] = prevY[i];
 			prevX[i] = px[i];
 			prevY[i] = py[i];
-			px[i] += vx[i];
-			py[i] += vy[i];
+			px[i] += vx[i] * dt;
+			py[i] += vy[i] * dt;
 			// Reflect at the edges instead of wrapping around. With large
 			// particle sizes the wrap-teleport was visible as a sudden
 			// disappear/reappear; bouncing keeps particles on-screen.
@@ -450,6 +467,14 @@ function startLoop(): void {
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
+		// Scale stroke alpha by speedFactor too. Without this, stationary or
+		// near-stationary particles (during decel or at frozen stop) re-paint
+		// the same lineWidth-wide round cap every frame, accumulating ink at
+		// a constant rate while trailFade drops to zero — causing the "gets
+		// brighter when stopped, darker when moving" effect. Scaling stroke
+		// alpha matches ink deposition to motion so equilibrium brightness
+		// stays consistent across all speeds, including full stop.
+		ctx.globalAlpha = speedFactor;
 		for (let b = 0; b < NUM_BUCKETS; b++) {
 			const bkt = buckets[b];
 			if (!bkt.length) continue;
@@ -462,8 +487,7 @@ function startLoop(): void {
 			}
 			ctx.stroke();
 		}
-		frame++;
-		phaseFrame++;
+		ctx.globalAlpha = 1;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -508,7 +532,7 @@ self.onmessage = (e: MessageEvent<IncomingMessage>): void => {
 		} else if (d.key === 'flowSpeed') {
 			rescaleFlowSpeed();
 		} else if (d.key === 'noiseScale' || d.key === 'turbulence') {
-			computeGrid(frame * 0.002);
+			computeGrid(performance.now() * 0.00012);
 		}
 		// trailFade / particleSize: read per-frame, no action needed
 	} else if (d.type === 'theme') {
