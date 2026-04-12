@@ -57,12 +57,46 @@
 		};
 	}
 
-	function postWake() {
-		worker?.postMessage({ type: 'wake' });
+	// Activity tracking: the animation runs at full speed whenever the user
+	// is present (cursor over the window AND tab visible AND window focused).
+	// When any of those drops away we send 'deactivate' so the worker begins
+	// the decel → sleep transition. On re-activation we send 'activate'.
+	let mouseOnPage = true;
+	let tabVisible = true;
+	let windowFocused = true;
+	let isActive = true;
+
+	function updateActivity() {
+		const nextActive = mouseOnPage && tabVisible && windowFocused;
+		if (nextActive === isActive) return;
+		isActive = nextActive;
+		worker?.postMessage({ type: isActive ? 'activate' : 'deactivate' });
 	}
 
+	function onMouseEnter() {
+		mouseOnPage = true;
+		updateActivity();
+	}
+	function onMouseLeave() {
+		mouseOnPage = false;
+		updateActivity();
+	}
+	function onFocus() {
+		windowFocused = true;
+		updateActivity();
+	}
+	function onBlur() {
+		windowFocused = false;
+		updateActivity();
+	}
 	function onVisibilityChange() {
-		if (document.visibilityState === 'visible') postWake();
+		tabVisible = document.visibilityState === 'visible';
+		updateActivity();
+	}
+	function onTouchStart() {
+		// Treat a touch as "mouse on page" for mobile — there's no hover state.
+		mouseOnPage = true;
+		updateActivity();
 	}
 
 	// The canvas is rendered at a generous fixed size picked at mount time
@@ -115,12 +149,19 @@
 			// The container's overflow:hidden + theme-colored bg handles any
 			// window size changes without ever reinitializing the canvas.
 
-			// Wake on user interaction or when the tab regains visibility.
-			// Window-level mousemove/touch because the background spans the
-			// whole viewport and we want movement anywhere to wake it.
-			window.addEventListener('mousemove', postWake, { passive: true });
-			window.addEventListener('touchstart', postWake, { passive: true });
+			// Activity listeners. `mouseenter`/`mouseleave` on documentElement
+			// track whether the cursor is physically over the browser window.
+			// Focus and visibility add tab/window-level presence.
+			mouseOnPage = true;
+			tabVisible = document.visibilityState === 'visible';
+			windowFocused = document.hasFocus();
+			isActive = mouseOnPage && tabVisible && windowFocused;
+			document.documentElement.addEventListener('mouseenter', onMouseEnter);
+			document.documentElement.addEventListener('mouseleave', onMouseLeave);
+			window.addEventListener('focus', onFocus);
+			window.addEventListener('blur', onBlur);
 			document.addEventListener('visibilitychange', onVisibilityChange);
+			window.addEventListener('touchstart', onTouchStart, { passive: true });
 		} catch (err) {
 			triggerFallback(err);
 		}
@@ -128,9 +169,12 @@
 
 	onDestroy(() => {
 		if (typeof window !== 'undefined') {
-			window.removeEventListener('mousemove', postWake);
-			window.removeEventListener('touchstart', postWake);
+			document.documentElement.removeEventListener('mouseenter', onMouseEnter);
+			document.documentElement.removeEventListener('mouseleave', onMouseLeave);
+			window.removeEventListener('focus', onFocus);
+			window.removeEventListener('blur', onBlur);
 			document.removeEventListener('visibilitychange', onVisibilityChange);
+			window.removeEventListener('touchstart', onTouchStart);
 		}
 		try {
 			worker?.terminate();

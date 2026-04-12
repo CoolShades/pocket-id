@@ -35,9 +35,16 @@ type ParamMessage = {
 };
 type ThemeMessage = { type: 'theme'; bg: RGB; palette: [RGB, RGB, RGB, RGB] };
 type SeedMessage = { type: 'seed'; value: number };
-type WakeMessage = { type: 'wake' };
+type ActivateMessage = { type: 'activate' };
+type DeactivateMessage = { type: 'deactivate' };
 
-type IncomingMessage = InitMessage | ParamMessage | ThemeMessage | SeedMessage | WakeMessage;
+type IncomingMessage =
+	| InitMessage
+	| ParamMessage
+	| ThemeMessage
+	| SeedMessage
+	| ActivateMessage
+	| DeactivateMessage;
 
 // ── SIMPLEX 3D NOISE ──────────────────────────────────────────────────
 const PERM = new Uint8Array(512);
@@ -190,9 +197,19 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let W = 0,
 	H = 0;
 let frame = 0; // monotonic frame counter (used for the flow-field noise time)
-let cycleFrame = 0; // frames since the current cycle started; resets on wake
-let sleeping = false;
 let gen = 0;
+
+// Animation state machine driven by activate/deactivate messages from the
+// Svelte host. While the user is active (cursor on page + window focused +
+// tab visible) the worker stays in 'full' forever. When the user goes idle
+// the host sends deactivate → 'decel' → 'sleep'. On re-activation the host
+// sends activate → 'ramp-up' → 'full', with the ramp starting from the
+// current speedFactor so there's no jump if we were mid-decel.
+type AnimPhase = 'ramp-up' | 'full' | 'decel' | 'sleep';
+let phase: AnimPhase = 'sleep';
+let phaseFrame = 0; // frames since the current phase began
+let phaseStartSpeed = 0; // speedFactor at the start of the current phase
+let speedFactor = 0; // current effective speed, 0..1
 
 let px: Float32Array, py: Float32Array;
 let vx: Float32Array, vy: Float32Array;
@@ -205,13 +222,9 @@ let count = 0;
 
 const CELL = 20;
 const GRID_REFRESH = 30;
-// Animation cycle: ramp up over 3s, run full speed for 5s, then decel over
-// 10s. The cycle loops forever via `frame % CYCLE` so there's no sleep/wake
-// flash — particles continuously speed up and slow down in place.
+// Ramp/decel durations (full phase has no duration — runs until deactivate).
 const RAMP_UP_FRAMES = 180; //  3s @ 60fps
-const FULL_SPEED_FRAMES = 300; //  5s
-const DECEL_FRAMES = 600; // 10s
-const CYCLE = RAMP_UP_FRAMES + FULL_SPEED_FRAMES + DECEL_FRAMES; // 18s
+const DECEL_FRAMES = 600; // 10s @ 60fps
 const NUM_COLORS = 4;
 const NUM_ALPHA = 4;
 const NUM_BUCKETS = NUM_COLORS * NUM_ALPHA;
@@ -335,50 +348,67 @@ function init(): void {
 	if (!ctx) return;
 	gen++;
 	frame = 0;
-	cycleFrame = 0;
-	sleeping = false;
+	speedFactor = 0;
 	allocateParticles();
 	ctx.fillStyle = `rgb(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]})`;
 	ctx.fillRect(0, 0, W, H);
+	enterPhase('ramp-up');
 	startLoop();
 }
 
-// Resume the animation cycle from its start (ramp-up phase) without clearing
-// the canvas — particles keep their current positions and smoothly accelerate
-// back up to full speed. Called when the user moves the mouse, touches, or
-// brings the tab back into focus.
-function wake(): void {
-	if (!sleeping || !ctx) return;
-	sleeping = false;
-	cycleFrame = 0;
-	startLoop();
+function enterPhase(next: AnimPhase): void {
+	phase = next;
+	phaseFrame = 0;
+	phaseStartSpeed = speedFactor;
+}
+
+// Host reports the user is active again. From sleep/decel, kick off a new
+// ramp-up starting at whatever speed we currently have (so interrupting a
+// decel mid-way doesn't jump back to zero). From ramp-up/full, do nothing.
+function activate(): void {
+	if (phase === 'ramp-up' || phase === 'full') return;
+	const wasSleeping = phase === 'sleep';
+	enterPhase('ramp-up');
+	if (wasSleeping) startLoop();
+}
+
+// Host reports the user is idle. Begin the decel from whatever speed we
+// currently have, so activating back mid-decel is symmetric.
+function deactivate(): void {
+	if (phase === 'decel' || phase === 'sleep') return;
+	enterPhase('decel');
 }
 
 function startLoop(): void {
 	if (!ctx) return;
 	const myGen = gen;
 	const tick = (): void => {
-		if (myGen !== gen || sleeping || !ctx) return;
-		// End-of-cycle: particles have decelerated to 0. Go to sleep; the
-		// Svelte component will post a 'wake' message on mouse move, touch,
-		// or tab visibility regained.
-		if (cycleFrame >= CYCLE) {
-			sleeping = true;
-			return;
-		}
-		// Cycle: ramp up over RAMP_UP_FRAMES, hold at 1 for FULL_SPEED_FRAMES,
-		// then linearly decay to 0 over DECEL_FRAMES. `frame` keeps advancing
-		// monotonically so the flow-field noise time stays smooth.
-		let speedFactor: number;
-		if (cycleFrame < RAMP_UP_FRAMES) {
-			speedFactor = cycleFrame / RAMP_UP_FRAMES;
-		} else if (cycleFrame < RAMP_UP_FRAMES + FULL_SPEED_FRAMES) {
+		if (myGen !== gen || phase === 'sleep' || !ctx) return;
+		// Advance the phase state machine. The 'full' phase has no duration —
+		// it runs forever until the host sends a deactivate message.
+		if (phase === 'ramp-up') {
+			const t = Math.min(1, phaseFrame / RAMP_UP_FRAMES);
+			speedFactor = phaseStartSpeed + (1 - phaseStartSpeed) * t;
+			if (speedFactor >= 1) {
+				speedFactor = 1;
+				enterPhase('full');
+			}
+		} else if (phase === 'full') {
 			speedFactor = 1;
-		} else {
-			const t = (cycleFrame - RAMP_UP_FRAMES - FULL_SPEED_FRAMES) / DECEL_FRAMES;
-			speedFactor = Math.max(0, 1 - t);
+		} else if (phase === 'decel') {
+			const t = Math.min(1, phaseFrame / DECEL_FRAMES);
+			speedFactor = phaseStartSpeed * (1 - t);
+			if (speedFactor <= 0) {
+				speedFactor = 0;
+				enterPhase('sleep');
+				return;
+			}
 		}
-		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade})`;
+		// Scale trailFade by speedFactor so the canvas never washes faster
+		// than particles can redraw. At speedFactor 0 there's no fade at all
+		// (canvas frozen); at full speed the configured trailFade applies.
+		// This eliminates the wake flash and keeps decel visually coherent.
+		ctx.fillStyle = `rgba(${cfg.bg[0]},${cfg.bg[1]},${cfg.bg[2]},${cfg.trailFade * speedFactor})`;
 		ctx.fillRect(0, 0, W, H);
 		if (frame % GRID_REFRESH === 0) computeGrid(frame * 0.002);
 		for (let b = 0; b < NUM_BUCKETS; b++) buckets[b].length = 0;
@@ -433,7 +463,7 @@ function startLoop(): void {
 			ctx.stroke();
 		}
 		frame++;
-		cycleFrame++;
+		phaseFrame++;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
@@ -488,7 +518,9 @@ self.onmessage = (e: MessageEvent<IncomingMessage>): void => {
 	} else if (d.type === 'seed') {
 		cfg.seed = d.value;
 		init();
-	} else if (d.type === 'wake') {
-		wake();
+	} else if (d.type === 'activate') {
+		activate();
+	} else if (d.type === 'deactivate') {
+		deactivate();
 	}
 };
