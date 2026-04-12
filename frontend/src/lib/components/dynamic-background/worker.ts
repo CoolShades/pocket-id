@@ -412,7 +412,9 @@ function startLoop(): void {
 		} else if (phase === 'decel') {
 			const t = Math.min(1, phaseElapsedMs / DECEL_MS);
 			speedFactor = phaseStartSpeed * (1 - t);
-			if (speedFactor <= 0) {
+			if (speedFactor <= 0.05) {
+				// Below 0.05 particle movement is sub-pixel and invisible.
+				// Freeze now to avoid ink accumulation from stationary dots.
 				speedFactor = 0;
 				enterPhase('sleep');
 				return;
@@ -470,11 +472,15 @@ function startLoop(): void {
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
-		// During decel, scale stroke alpha with speedFactor so ink deposition
-		// drops in step with the fading rate. This prevents slow/stationary
-		// particles from accumulating saturated color as trailFade → 0.
-		// During ramp-up and full, keep full alpha so trails build organically.
-		if (phase === 'decel') ctx.globalAlpha = speedFactor;
+		// Below sf 0.3, particles are nearly stationary and stamp ink on the
+		// same pixels every frame while trailFade → 0 can't keep up → colours
+		// over-saturate. Scale stroke alpha down only in this narrow band so
+		// ink deposition tapers off in step with the fading. Above 0.3 the
+		// particles still move enough to spread their ink, so no scaling needed
+		// — this avoids the global canvas darkening that full-range scaling
+		// causes and keeps re-activation transitions smooth.
+		const needInkScale = phase === 'decel' && speedFactor < 0.3;
+		if (needInkScale) ctx.globalAlpha = speedFactor / 0.3;
 		for (let b = 0; b < NUM_BUCKETS; b++) {
 			const bkt = buckets[b];
 			if (!bkt.length) continue;
@@ -487,7 +493,7 @@ function startLoop(): void {
 			}
 			ctx.stroke();
 		}
-		if (phase === 'decel') ctx.globalAlpha = 1;
+		if (needInkScale) ctx.globalAlpha = 1;
 		requestAnimationFrame(tick);
 	};
 	requestAnimationFrame(tick);
