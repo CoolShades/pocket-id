@@ -466,14 +466,7 @@ function startLoop(): void {
 				py[i] = 0;
 				vy[i] = Math.abs(vy[i]);
 			}
-			// Only bucket particles that actually moved — stationary ones would
-			// stamp ink at the same spot every frame, accumulating brightness
-			// while trailFade is low during decel.
-			const dx = px[i] - ppX[i];
-			const dy = py[i] - ppY[i];
-			if (dx * dx + dy * dy > 0.25) {
-				buckets[pColorIdx[i] * NUM_ALPHA + pAlphaIdx[i]].push(i);
-			}
+			buckets[pColorIdx[i] * NUM_ALPHA + pAlphaIdx[i]].push(i);
 		}
 		ctx.lineWidth = cfg.particleSize;
 		ctx.lineCap = 'round';
