@@ -46,6 +46,9 @@
 	let canUseDynamic = $state(false);
 	let dynamicFailed = $state(false);
 
+	// Fresh seed each mount so the pattern differs per visit; admin preview still uses the configured seed.
+	const randomSeed = Math.floor(Math.random() * 4294967295) + 1;
+
 	onMount(() => {
 		const offscreenOk =
 			typeof HTMLCanvasElement !== 'undefined' &&
@@ -68,7 +71,7 @@
 
 	let dynamicConfig = $derived<DynamicBackgroundConfig>({
 		theme: $appConfigStore.dynamicBackgroundTheme,
-		seed: $appConfigStore.dynamicBackgroundSeed,
+		seed: randomSeed,
 		density: $appConfigStore.dynamicBackgroundDensity,
 		flowSpeed: $appConfigStore.dynamicBackgroundFlowSpeed,
 		noiseScale: $appConfigStore.dynamicBackgroundNoiseScale,
