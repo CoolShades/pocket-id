@@ -1,5 +1,7 @@
 <script module lang="ts">
-	let backgroundImageExists = $state<boolean | undefined>(undefined);
+	// Persist the last failing background image URL across route remounts so
+	// login pages without a background do not briefly retry the image and stutter.
+	let persistedMissingBackgroundImageUrl: string | undefined;
 </script>
 
 <script lang="ts">
@@ -26,20 +28,31 @@
 		showAlternativeSignInMethodButton?: boolean;
 	} = $props();
 
+	let missingBackgroundImageUrl = $state<string | undefined>(persistedMissingBackgroundImageUrl);
+	let loadedBackgroundImageUrl = $state<string | undefined>();
 	let isInitialLoad = $state(false);
-	let animate = $derived(isInitialLoad && !$appConfigStore.disableAnimations);
-
-	onMount(async () => {
-		fetch(cachedBackgroundImage.getUrl(), {
-			method: 'HEAD'
-		})
-			.then(async (res) => (backgroundImageExists = res.ok))
-			.catch(() => (backgroundImageExists = false));
-	});
+	let backgroundImageUrl = $derived(cachedBackgroundImage.getUrl());
+	let imageError = $derived(missingBackgroundImageUrl === backgroundImageUrl);
+	let imageLoaded = $derived(loadedBackgroundImageUrl === backgroundImageUrl);
+	let animate = $derived(isInitialLoad && imageLoaded && !$appConfigStore.disableAnimations);
 
 	afterNavigate((e) => {
 		isInitialLoad = !e?.from?.url;
 	});
+
+	function onBackgroundImageLoad() {
+		loadedBackgroundImageUrl = backgroundImageUrl;
+		if (persistedMissingBackgroundImageUrl === backgroundImageUrl) {
+			persistedMissingBackgroundImageUrl = undefined;
+			missingBackgroundImageUrl = undefined;
+		}
+	}
+
+	function onBackgroundImageError() {
+		loadedBackgroundImageUrl = undefined;
+		persistedMissingBackgroundImageUrl = backgroundImageUrl;
+		missingBackgroundImageUrl = backgroundImageUrl;
+	}
 
 	const isDesktop = new MediaQuery('min-width: 1024px');
 
@@ -93,9 +106,9 @@
 	});
 
 	onDestroy(() => {
+		// Restore whatever the store says when leaving the login page.
 		applyAccentColor($appConfigStore.accentColor);
 	});
-
 	let alternativeSignInButton = $state({
 		href: '/login/alternative',
 		label: m.alternative_sign_in_methods()
@@ -116,67 +129,56 @@
 	});
 </script>
 
-{#if backgroundImageExists === undefined && !useDynamic}
-	<div class="bg-background h-screen"></div>
-{:else if isDesktop.current}
-	<div in:fade={{ duration: 150 }} class="h-screen items-center overflow-hidden text-center">
-		<div
-			class="relative z-10 flex h-full p-16 {cn(
-				showAlternativeSignInMethodButton && 'pb-0',
-				(backgroundImageExists || useDynamic) && 'w-[650px] 2xl:w-[800px]'
-			)}"
-		>
-			<div class="flex h-full w-full flex-col overflow-hidden">
-				<div class="relative flex grow flex-col items-center justify-center overflow-auto p-1">
-					{@render children()}
-				</div>
-				{#if showAlternativeSignInMethodButton}
-					<div class="mb-4 flex items-center justify-center">
-						<a
-							href={alternativeSignInButton.href}
-							class="text-muted-foreground text-xs transition-colors hover:underline"
-						>
-							{alternativeSignInButton.label}
-						</a>
+{#if isDesktop.current}
+	<div class="fixed inset-0" transition:fade={{ duration: 150 }}>
+		<div class="h-screen items-center overflow-hidden text-center flex justify-center">
+			<div
+				class="flex h-full w-[650px] 2xl:w-[800px] p-16 transition-[width] duration-150 {cn(
+					showAlternativeSignInMethodButton && 'pb-0'
+				)}"
+			>
+				<div class="flex h-full w-full flex-col overflow-hidden">
+					<div class="relative flex grow flex-col items-center justify-center overflow-auto p-1">
+						{@render children()}
 					</div>
-				{/if}
+					{#if showAlternativeSignInMethodButton}
+						<div class="mb-4 flex items-center justify-center">
+							<a
+								href={alternativeSignInButton.href}
+								class="text-muted-foreground text-xs transition-colors hover:underline"
+							>
+								{alternativeSignInButton.label}
+							</a>
+						</div>
+					{/if}
+				</div>
 			</div>
-		</div>
 
-		{#if useDynamic}
-			<!-- Dynamic background -->
-			<div
-				class="absolute top-0 right-0 left-500px bottom-0 z-0 m-6 overflow-hidden rounded-[40px]"
-			>
-				<DynamicBackground
-					config={dynamicConfig}
-					mode={mode.current ?? 'dark'}
-					class="h-full w-full"
-					onfallback={() => (dynamicFailed = true)}
-				/>
-			</div>
-		{:else if backgroundImageExists}
-			<!-- Background image -->
-			<div
-				class="absolute top-0 right-0 left-500px bottom-0 z-0 overflow-hidden rounded-[40px] m-6"
-			>
-				<img
-					src={cachedBackgroundImage.getUrl()}
-					class="{cn(
-						animate && 'animate-bg-zoom'
-					)} h-screen object-cover w-[calc(100vw-650px)] 2xl:w-[calc(100vw-800px)]"
-					alt={m.login_background()}
-				/>
-			</div>
-		{/if}
+			{#if useDynamic}
+				<div class="m-6 flex h-[calc(100vh-3rem)] min-w-0 flex-1 overflow-hidden rounded-[40px]">
+					<DynamicBackground
+						config={dynamicConfig}
+						mode={mode.current ?? 'dark'}
+						class="h-full w-full"
+						onfallback={() => (dynamicFailed = true)}
+					/>
+				</div>
+			{:else if !imageError}
+				<!-- Background image -->
+				<div class="m-6 flex h-[calc(100vh-3rem)] overflow-hidden rounded-[40px]">
+					<img
+						src={backgroundImageUrl}
+						class="h-full object-cover {cn(animate && 'animate-bg-zoom')}"
+						alt={m.login_background()}
+						onload={onBackgroundImageLoad}
+						onerror={onBackgroundImageError}
+					/>
+				</div>
+			{/if}
+		</div>
 	</div>
 {:else}
-	<div
-		class="flex h-screen items-center justify-center bg-cover bg-center text-center"
-		style={useDynamic || !backgroundImageExists
-			? ''
-			: `background-image: url(${cachedBackgroundImage.getUrl()});`}
-	>
+	<div class="fixed inset-0" transition:fade={{ duration: 150 }}>
 		{#if useDynamic}
 			<div class="fixed inset-0 -z-10">
 				<DynamicBackground
@@ -187,25 +189,25 @@
 				/>
 			</div>
 		{/if}
-		<Card.Root
-			class={{
-				'mx-3 w-full max-w-md': true,
-				'bg-transparent border-0': !backgroundImageExists || useDynamic
-			}}
+		<div
+			class="flex h-screen items-center justify-center bg-cover bg-center text-center"
+			style={useDynamic ? '' : `background-image: url(${cachedBackgroundImage.getUrl()});`}
 		>
-			<Card.CardContent
-				class="px-4 py-10 sm:p-10 {showAlternativeSignInMethodButton ? 'pb-3 sm:pb-3' : ''} "
-			>
-				{@render children()}
-				{#if showAlternativeSignInMethodButton}
-					<a
-						href={alternativeSignInButton.href}
-						class="text-muted-foreground mt-7 flex justify-center text-xs transition-colors hover:underline"
-					>
-						{alternativeSignInButton.label}
-					</a>
-				{/if}
-			</Card.CardContent>
-		</Card.Root>
+			<Card.Root class="mx-3 w-full max-w-md">
+				<Card.CardContent
+					class="px-4 py-10 sm:p-10 {showAlternativeSignInMethodButton ? 'pb-3 sm:pb-3' : ''}"
+				>
+					{@render children()}
+					{#if showAlternativeSignInMethodButton}
+						<a
+							href={alternativeSignInButton.href}
+							class="text-muted-foreground mt-7 flex justify-center text-xs transition-colors hover:underline"
+						>
+							{alternativeSignInButton.label}
+						</a>
+					{/if}
+				</Card.CardContent>
+			</Card.Root>
+		</div>
 	</div>
 {/if}
