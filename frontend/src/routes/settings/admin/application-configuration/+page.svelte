@@ -10,6 +10,7 @@
 		LucideImage,
 		LucideInfo,
 		Mail,
+		Sparkles,
 		SlidersHorizontal,
 		UserSearch,
 		Users
@@ -156,7 +157,16 @@
 		description={m.configure_application_images()}
 	>
 		<UpdateApplicationImages callback={updateImages} />
-		<hr class="border-border my-6" />
+	</CollapsibleCard>
+</div>
+
+<div>
+	<CollapsibleCard
+		id="application-configuration-dynamic-background"
+		icon={Sparkles}
+		title={m.dynamic_background()}
+		description={m.dynamic_background_description()}
+	>
 		<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
 	</CollapsibleCard>
 </div>
