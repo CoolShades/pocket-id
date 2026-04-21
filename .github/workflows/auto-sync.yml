@@ -91,7 +91,16 @@ jobs:
           This commit contains the merge conflict markers. Resolve them, then
           merge this PR into ${{ env.TARGET_BRANCH }}."
           git push -u origin "$BRANCH" --force
-          gh pr create \
+
+          # Ensure the sync-conflict label exists (forks don't inherit upstream labels).
+          gh label create sync-conflict \
+            --color EA8A00 \
+            --description "Auto-opened PR carrying conflict markers from daily upstream sync" \
+            2>/dev/null || true
+
+          # If a PR for this branch already exists today, `gh pr create` exits non-zero;
+          # treat that case as success but fail loudly on any other error.
+          if ! gh pr create \
             --base ${{ env.TARGET_BRANCH }} \
             --head "$BRANCH" \
             --title "auto-sync: resolve conflicts from main into ${{ env.TARGET_BRANCH }} (${DATE})" \
@@ -109,5 +118,16 @@ jobs:
           \`\`\`
 
           Then merge this PR." \
-            --label "sync-conflict" || \
-          echo "::warning::PR may already exist for today's sync. Check the pull requests tab."
+            --label "sync-conflict"; then
+            if gh pr list --head "$BRANCH" --base ${{ env.TARGET_BRANCH }} --state open --json number --jq '.[0].number' | grep -q .; then
+              echo "::warning::PR for ${BRANCH} already open — skipping creation."
+            else
+              echo "::error::gh pr create failed and no existing PR for ${BRANCH} was found."
+              exit 1
+            fi
+          fi
+
+          # Even when the PR step succeeds, a conflict is a condition the user must act on.
+          # Fail the job so the Actions UI turns red and GitHub emails on failure.
+          echo "::error::Sync conflict from main into ${{ env.TARGET_BRANCH }} — see PR for ${BRANCH}."
+          exit 1
