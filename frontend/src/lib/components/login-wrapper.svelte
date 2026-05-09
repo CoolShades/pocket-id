@@ -40,6 +40,7 @@
 		isInitialLoad = !e?.from?.url;
 	});
 
+<<<<<<< HEAD
 	function onBackgroundImageLoad() {
 		loadedBackgroundImageUrl = backgroundImageUrl;
 		if (persistedMissingBackgroundImageUrl === backgroundImageUrl) {
@@ -109,6 +110,9 @@
 		// Restore whatever the store says when leaving the login page.
 		applyAccentColor($appConfigStore.accentColor);
 	});
+=======
+	const isDesktop = new MediaQuery('(min-width: 1024px)');
+>>>>>>> main
 	let alternativeSignInButton = $state({
 		href: '/login/alternative',
 		label: m.alternative_sign_in_methods()
@@ -129,6 +133,7 @@
 	});
 </script>
 
+<<<<<<< HEAD
 {#if isDesktop.current}
 	<div class="fixed inset-0" transition:fade={{ duration: 150 }}>
 		<div class="h-screen items-center overflow-hidden text-center flex justify-center">
@@ -136,6 +141,44 @@
 				class="flex h-full w-[650px] 2xl:w-[800px] p-16 transition-[width] duration-150 {cn(
 					showAlternativeSignInMethodButton && 'pb-0'
 				)}"
+=======
+{#if backgroundImageExists === undefined}
+	<div class="bg-background h-screen"></div>
+{:else if isDesktop.current}
+	<div
+		in:fade={{ duration: 150 }}
+		class="relative flex h-screen w-full items-center overflow-hidden text-center {backgroundImageExists
+			? 'justify-start'
+			: 'justify-center'}"
+	>
+		<div
+			class="relative z-10 flex h-full p-16 {cn(
+				showAlternativeSignInMethodButton && 'pb-0',
+				backgroundImageExists && 'w-[650px] 2xl:w-[800px]'
+			)}"
+		>
+			<div class="flex h-full w-full flex-col overflow-hidden">
+				<div class="relative flex grow flex-col items-center justify-center overflow-auto p-1">
+					{@render children()}
+				</div>
+				{#if showAlternativeSignInMethodButton}
+					<div class="mb-4 flex items-center justify-center">
+						<a
+							href={alternativeSignInButton.href}
+							class="text-muted-foreground text-xs transition-colors hover:underline"
+						>
+							{alternativeSignInButton.label}
+						</a>
+					</div>
+				{/if}
+			</div>
+		</div>
+
+		{#if backgroundImageExists}
+			<!-- Background image -->
+			<div
+				class="absolute top-0 right-0 bottom-0 left-[650px] z-0 m-6 overflow-hidden rounded-[40px] 2xl:left-[800px]"
+>>>>>>> main
 			>
 				<div class="flex h-full w-full flex-col overflow-hidden">
 					<div class="relative flex grow flex-col items-center justify-center overflow-auto p-1">
