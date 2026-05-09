@@ -83,6 +83,9 @@ jobs:
         if: steps.merge.outputs.status == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Without this, gh defaults to the upstream parent for `pr create` / `pr list` /
+          # `label create` on fork checkouts, which is wrong — we want the fork.
+          GH_REPO: ${{ github.repository }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
           BRANCH="sync-conflict/${DATE}"
