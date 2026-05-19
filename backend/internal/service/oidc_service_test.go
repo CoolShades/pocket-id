@@ -583,10 +583,9 @@ func TestOidcServiceRefreshTokenAuthorizationState(t *testing.T) {
 			appConfigService: mockConfig,
 		}
 
-		email := "refresh-token-user@example.com"
 		user := model.User{
 			Username:      "refresh-token-user",
-			Email:         &email,
+			Email:         new("refresh-token-user@example.com"),
 			EmailVerified: true,
 			FirstName:     "Refresh",
 			LastName:      "User",
@@ -761,6 +760,61 @@ func TestValidateCodeVerifier_Plain(t *testing.T) {
 		// Invalid base64
 		require.False(t, validateCodeVerifier("NOT!VALID", codeChallenge, true))
 	})
+}
+
+func TestCodeChallengeMethodIsSha256(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		wantSha256 bool
+		wantErr    bool
+	}{
+		{
+			name:       "omitted defaults to plain",
+			method:     "",
+			wantSha256: false,
+		},
+		{
+			name:       "plain",
+			method:     "plain",
+			wantSha256: false,
+		},
+		{
+			name:       "plain case insensitive",
+			method:     "PLAIN",
+			wantSha256: false,
+		},
+		{
+			name:       "s256",
+			method:     "S256",
+			wantSha256: true,
+		},
+		{
+			name:       "s256 case insensitive",
+			method:     "s256",
+			wantSha256: true,
+		},
+		{
+			name:    "unknown method",
+			method:  "S384",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := codeChallengeMethodIsSha256(tt.method)
+			if tt.wantErr {
+				require.Error(t, err)
+				var invalidRequest *common.OidcInvalidRequestError
+				require.ErrorAs(t, err, &invalidRequest)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSha256, got)
+		})
+	}
 }
 
 func TestOidcService_updateClientLogoType(t *testing.T) {
