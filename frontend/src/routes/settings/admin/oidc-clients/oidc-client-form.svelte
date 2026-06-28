@@ -51,6 +51,7 @@
 		requiresReauthentication: existingClient?.requiresReauthentication || false,
 		requiresPushedAuthorizationRequests:
 			existingClient?.requiresPushedAuthorizationRequests || false,
+		skipConsent: existingClient?.skipConsent || false,
 		launchURL: existingClient?.launchURL || '',
 		credentials: {
 			federatedIdentities: existingClient?.credentials?.federatedIdentities || []
@@ -77,6 +78,7 @@
 		pkceEnabled: z.boolean(),
 		requiresReauthentication: z.boolean(),
 		requiresPushedAuthorizationRequests: z.boolean(),
+		skipConsent: z.boolean(),
 		launchURL: optionalUrl,
 		logoUrl: optionalUrl,
 		darkLogoUrl: optionalUrl,
@@ -86,7 +88,8 @@
 					issuer: z.url(),
 					subject: z.string().optional(),
 					audience: z.string().optional(),
-					jwks: z.url().optional().or(z.literal(''))
+					jwks: z.url().optional().or(z.literal('')),
+					replayProtection: z.boolean().default(true)
 				})
 			)
 		})
@@ -208,7 +211,6 @@
 			onCheckedChange={(v) => {
 				if (v) {
 					$inputs.pkceEnabled.value = true;
-					$inputs.requiresPushedAuthorizationRequests.value = false;
 				}
 			}}
 			bind:checked={$inputs.isPublic.value}
@@ -225,6 +227,12 @@
 			label={m.requires_reauthentication()}
 			description={m.requires_users_to_authenticate_again_on_each_authorization()}
 			bind:checked={$inputs.requiresReauthentication.value}
+		/>
+		<SwitchWithLabel
+			id="skip-consent"
+			label={m.skip_consent()}
+			description={m.skip_consent_description()}
+			bind:checked={$inputs.skipConsent.value}
 		/>
 	</div>
 	<div class="mt-7 w-full md:w-1/2">
@@ -278,7 +286,6 @@
 				id="requires-par"
 				label={m.requires_pushed_authorization_requests()}
 				description={m.requires_pushed_authorization_requests_description()}
-				disabled={$inputs.isPublic.value}
 				bind:checked={$inputs.requiresPushedAuthorizationRequests.value}
 			/>
 			{#if mode == 'create'}
