@@ -133,7 +133,7 @@
 		<div
 			class="relative z-10 flex h-full p-16 {cn(
 				showAlternativeSignInMethodButton && 'pb-0',
-				hasVisibleBackground && 'w-[650px] 2xl:w-[800px]'
+				hasVisibleBackground && 'w-full max-w-[650px] 2xl:max-w-[800px]'
 			)}"
 		>
 			<div class="flex h-full w-full flex-col overflow-hidden">
