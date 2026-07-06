@@ -13,6 +13,7 @@ export type AppConfig = {
 	uiConfigDisabled: boolean;
 	accentColor: string;
 	requireUserEmail: boolean;
+	tracingEnabled: boolean;
 	dynamicBackgroundEnabled: boolean;
 	dynamicBackgroundTheme: string;
 	dynamicBackgroundSeed: number;
