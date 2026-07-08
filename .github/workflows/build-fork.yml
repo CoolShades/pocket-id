@@ -62,8 +62,22 @@ jobs:
         working-directory: frontend
         run: pnpm run build
 
+      # Upstream removed scripts/development/build-binaries.sh in favor of
+      # GoReleaser Pro (needs their license key), so cross-compile directly.
+      # Dockerfile-prebuilt expects binaries at linux/${TARGETARCH}/${TARGETVARIANT}/pocket-id
+      # relative to the build context (TARGETVARIANT is empty for amd64/arm64).
       - name: Build binaries
-        run: sh scripts/development/build-binaries.sh --docker-only
+        working-directory: backend
+        run: |
+          VERSION=$(tr -d '[:space:]' < ../.version)
+          for ARCH in amd64 arm64; do
+            mkdir -p "../linux/${ARCH}"
+            CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} go build \
+              -ldflags="-w -s -buildid=${VERSION} -X github.com/pocket-id/pocket-id/backend/internal/common.Version=${VERSION}" \
+              -trimpath \
+              -o "../linux/${ARCH}/pocket-id" \
+              ./cmd
+          done
 
       - name: Build and push container image
         id: build-push-image
