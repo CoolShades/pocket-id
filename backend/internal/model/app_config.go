@@ -44,6 +44,7 @@ type AppConfig struct {
 	AllowUserSignups          AppConfigVariable `key:"allowUserSignups,public"`    // Public
 	SignupDefaultUserGroupIDs AppConfigVariable `key:"signupDefaultUserGroupIDs"`
 	SignupDefaultCustomClaims AppConfigVariable `key:"signupDefaultCustomClaims"`
+<<<<<<< HEAD
 	// Dynamic background
 	DynamicBackgroundEnabled      AppConfigVariable `key:"dynamicBackgroundEnabled,public"`      // Public
 	DynamicBackgroundTheme        AppConfigVariable `key:"dynamicBackgroundTheme,public"`        // Public
@@ -56,6 +57,8 @@ type AppConfig struct {
 	DynamicBackgroundParticleSize AppConfigVariable `key:"dynamicBackgroundParticleSize,public"` // Public
 	// Internal
 	InstanceID AppConfigVariable `key:"instanceId,internal"` // Internal
+=======
+>>>>>>> main
 	// Email
 	RequireUserEmail                           AppConfigVariable `key:"requireUserEmail,public"` // Public
 	SmtpHost                                   AppConfigVariable `key:"smtpHost"`

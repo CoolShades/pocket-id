@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/go-uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -39,11 +38,6 @@ func NewAppConfigService(ctx context.Context, db *gorm.DB) (service *AppConfigSe
 	err = service.LoadDbConfig(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize app config service: %w", err)
-	}
-
-	err = service.initInstanceID(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize instance ID: %w", err)
 	}
 
 	return service, nil
@@ -75,6 +69,7 @@ func (s *AppConfigService) getDefaultDbConfig() *model.AppConfig {
 		SignupDefaultUserGroupIDs: model.AppConfigVariable{Value: "[]"},
 		SignupDefaultCustomClaims: model.AppConfigVariable{Value: "[]"},
 		AccentColor:               model.AppConfigVariable{Value: "default"},
+<<<<<<< HEAD
 		// Dynamic background
 		DynamicBackgroundEnabled:      model.AppConfigVariable{Value: "false"},
 		DynamicBackgroundTheme:        model.AppConfigVariable{Value: "Neon"},
@@ -87,6 +82,8 @@ func (s *AppConfigService) getDefaultDbConfig() *model.AppConfig {
 		DynamicBackgroundParticleSize: model.AppConfigVariable{Value: "236"},
 		// Internal
 		InstanceID: model.AppConfigVariable{Value: ""},
+=======
+>>>>>>> main
 		// Email
 		RequireUserEmail:              model.AppConfigVariable{Value: "true"},
 		SmtpHost:                      model.AppConfigVariable{},
@@ -437,6 +434,7 @@ func (s *AppConfigService) loadDbConfigFromEnv(ctx context.Context, tx *gorm.DB)
 
 	return dest, nil
 }
+<<<<<<< HEAD
 
 func (s *AppConfigService) initInstanceID(ctx context.Context) error {
 	// Check if the instance ID is already set
@@ -491,3 +489,5 @@ func validateDynamicBackground(input dto.AppConfigUpdateDto) error {
 	}
 	return nil
 }
+=======
+>>>>>>> main
