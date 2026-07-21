@@ -43,18 +43,18 @@ const (
 )
 
 type JwtService struct {
-	db               *gorm.DB
-	envConfig        *common.EnvConfigSchema
-	privateKey       jwk.Key
-	keyId            string
-	appConfigService *AppConfigService
-	jwksEncoded      []byte
+	db          *gorm.DB
+	envConfig   *common.EnvConfigSchema
+	privateKey  jwk.Key
+	keyId       string
+	instanceID  string
+	jwksEncoded []byte
 }
 
-func NewJwtService(ctx context.Context, db *gorm.DB, appConfigService *AppConfigService) (*JwtService, error) {
+func NewJwtService(ctx context.Context, db *gorm.DB, instanceID string) (*JwtService, error) {
 	service := &JwtService{}
 
-	err := service.init(ctx, db, appConfigService, &common.EnvConfig)
+	err := service.init(ctx, db, instanceID, &common.EnvConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -62,10 +62,10 @@ func NewJwtService(ctx context.Context, db *gorm.DB, appConfigService *AppConfig
 	return service, nil
 }
 
-func (s *JwtService) init(ctx context.Context, db *gorm.DB, appConfigService *AppConfigService, envConfig *common.EnvConfigSchema) (err error) {
-	s.appConfigService = appConfigService
+func (s *JwtService) init(ctx context.Context, db *gorm.DB, instanceID string, envConfig *common.EnvConfigSchema) (err error) {
 	s.envConfig = envConfig
 	s.db = db
+	s.instanceID = instanceID
 
 	// Ensure keys are generated or loaded
 	return s.LoadOrGenerateKey(ctx)
@@ -73,7 +73,7 @@ func (s *JwtService) init(ctx context.Context, db *gorm.DB, appConfigService *Ap
 
 func (s *JwtService) LoadOrGenerateKey(ctx context.Context) error {
 	// Get the key provider
-	keyProvider, err := jwkutils.GetKeyProvider(s.db, s.envConfig, s.appConfigService.GetDbConfig().InstanceID.Value)
+	keyProvider, err := jwkutils.GetKeyProvider(s.db, s.envConfig, s.instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to get key provider: %w", err)
 	}
@@ -181,12 +181,11 @@ func (s *JwtService) SetKey(privateKey jwk.Key) error {
 	return nil
 }
 
-func (s *JwtService) GenerateAccessToken(user model.User, authenticationMethod string) (string, error) {
-
+func (s *JwtService) GenerateAccessToken(user model.User, authenticationMethod string, sessionDuration time.Duration) (string, error) {
 	now := time.Now()
 	token, err := jwt.NewBuilder().
 		Subject(user.ID).
-		Expiration(now.Add(s.appConfigService.GetDbConfig().SessionDuration.AsDurationMinutes())).
+		Expiration(now.Add(sessionDuration)).
 		IssuedAt(now).
 		Issuer(s.envConfig.AppURL).
 		JwtID(uuid.New().String()).
