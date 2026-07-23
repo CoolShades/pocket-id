@@ -22,10 +22,12 @@ import (
 	"github.com/ory/fosite/compose"
 	fositejwt "github.com/ory/fosite/token/jwt"
 	"github.com/pocket-id/pocket-id/backend/internal/apikey"
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/api"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"github.com/pocket-id/pocket-id/backend/internal/oidc"
@@ -40,7 +42,7 @@ import (
 type TestService struct {
 	db               *gorm.DB
 	jwtService       *JwtService
-	appConfigService *AppConfigService
+	appConfigService *appconfig.AppConfigService
 	ldapService      *LdapService
 	fileStorage      storage.FileStorage
 	appLockService   *AppLockService
@@ -54,7 +56,7 @@ const (
 	e2eRefreshTokenExpiredFixtureToken = "X4vqwtRyCUaq51UafHea4Fsg8Km6CAns6vp3tuX4"
 )
 
-func NewTestService(db *gorm.DB, appConfigService *AppConfigService, jwtService *JwtService, ldapService *LdapService, appLockService *AppLockService, fileStorage storage.FileStorage) (*TestService, error) {
+func NewTestService(db *gorm.DB, appConfigService *appconfig.AppConfigService, jwtService *JwtService, ldapService *LdapService, appLockService *AppLockService, fileStorage storage.FileStorage) (*TestService, error) {
 	s := &TestService{
 		db:               db,
 		appConfigService: appConfigService,
@@ -218,6 +220,9 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 				LogoutCallbackURLs: model.UrlList{"http://tailscale.localhost/auth/logout/callback"},
 				IsGroupRestricted:  true,
 				CreatedByID:        new(users[0].ID),
+				AllowedUserGroups: []model.UserGroup{
+					userGroups[0],
+				},
 			},
 			{
 				Base: model.Base{
@@ -278,6 +283,61 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 			if err := tx.Create(&client).Error; err != nil {
 				return err
 			}
+		}
+
+		farFuture := datatype.DateTime(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+		oauth2Session := oidc.OAuth2Session{
+			Base: model.Base{
+				ID: "551ab785-c830-47d3-8a07-60c9f3bb4859",
+			},
+			Kind:                 "access_token",
+			Key:                  "cross-database-test-session",
+			RequestID:            "cross-database-test-request",
+			AccessTokenSignature: "",
+			Active:               true,
+			RequestData:          `{"request":"value"}`,
+			ExpiresAt:            &farFuture,
+		}
+		if err := tx.Create(&oauth2Session).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Table("oauth2_jtis").Create(map[string]any{
+			"id":         "bd0c8bf2-66ec-487a-9dd5-7d9d78d73543",
+			"created_at": datatype.DateTime(time.Now()),
+			"jti":        "cross-database-test-jti",
+			"expires_at": farFuture,
+		}).Error; err != nil {
+			return err
+		}
+
+		interactionSession := oidc.InteractionSession{
+			Base: model.Base{
+				ID: "aaf5dd23-cd1f-4748-a2aa-baa6af94d800",
+			},
+			Scopes:          datatype.StringList{"openid"},
+			ClientID:        oidcClients[0].ID,
+			UserID:          new(users[0].ID),
+			ConsentRequired: true,
+			RequestedAt:     farFuture,
+			Parameters: oidc.InteractionSessionParameters{
+				"client_id": oidcClients[0].ID,
+			},
+		}
+		if err := tx.Create(&interactionSession).Error; err != nil {
+			return err
+		}
+
+		reauthenticationToken := webauthn.ReauthenticationToken{
+			Base: model.Base{
+				ID: "71839ace-d978-4e6f-8fb1-b8648a21031b",
+			},
+			Token:     "cross-database-reauthentication-token",
+			ExpiresAt: farFuture,
+			UserID:    users[0].ID,
+		}
+		if err := tx.Create(&reauthenticationToken).Error; err != nil {
+			return err
 		}
 
 		accessToken := model.OneTimeAccessToken{
@@ -624,23 +684,27 @@ func (s *TestService) ResetApplicationImages(ctx context.Context) error {
 }
 
 func (s *TestService) ResetAppConfig(ctx context.Context) error {
-	// Reset all app config variables to their default values in the database
-	err := s.db.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&model.AppConfigVariable{}).Update("value", "").Error
+	// Reset all application configuration values through the singleton actor
+	_, err := s.appConfigService.UpdateAppConfig(ctx, dto.AppConfigUpdateDto{})
 	if err != nil {
 		return err
 	}
 
-	// Manually set instance ID
-	err = s.appConfigService.UpdateAppConfigValues(ctx, "instanceId", "test-instance-id")
+	// Manually set the instance ID used to derive the JWK encryption key, so the seeded JWK can be decrypted
+	// Persist the fixed test value so it survives an export/import round-trip
+	const testInstanceID = "test-instance-id"
+	err = s.db.WithContext(ctx).
+		Exec(
+			`INSERT INTO kv (key, value) VALUES ('instance_id', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+			testInstanceID,
+		).
+		Error
 	if err != nil {
 		return err
 	}
 
-	// Reload the app config from the database after resetting the values
-	err = s.appConfigService.LoadDbConfig(ctx)
-	if err != nil {
-		return err
-	}
+	// The instance ID is loaded once at startup, so we also set it directly on the JWT service so it takes effect immediately
+	s.jwtService.instanceID = testInstanceID
 
 	// Reload the JWK
 	if err := s.jwtService.LoadOrGenerateKey(ctx); err != nil {
@@ -657,48 +721,37 @@ func (s *TestService) ResetLock(ctx context.Context) error {
 
 // SyncLdap triggers an LDAP synchronization
 func (s *TestService) SyncLdap(ctx context.Context) error {
-	return s.ldapService.SyncAll(ctx)
+	dbConfig, err := s.appConfigService.GetConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("error loading app configuration: %w", err)
+	}
+	return s.ldapService.SyncAll(ctx, dbConfig)
 }
 
-// SetLdapTestConfig writes the test LDAP config variables directly to the database.
+// SetLdapTestConfig updates the LDAP configuration used by the end-to-end test server
 func (s *TestService) SetLdapTestConfig(ctx context.Context) error {
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		ldapConfigs := map[string]string{
-			"ldapUrl":                            "ldap://lldap:3890",
-			"ldapBindDn":                         "uid=admin,ou=people,dc=pocket-id,dc=org",
-			"ldapBindPassword":                   "admin_password",
-			"ldapBase":                           "dc=pocket-id,dc=org",
-			"ldapUserSearchFilter":               "(objectClass=person)",
-			"ldapUserGroupSearchFilter":          "(objectClass=groupOfNames)",
-			"ldapSkipCertVerify":                 "true",
-			"ldapAttributeUserUniqueIdentifier":  "uuid",
-			"ldapAttributeUserUsername":          "uid",
-			"ldapAttributeUserEmail":             "mail",
-			"ldapAttributeUserFirstName":         "givenName",
-			"ldapAttributeUserLastName":          "sn",
-			"ldapAttributeGroupUniqueIdentifier": "uuid",
-			"ldapAttributeGroupName":             "uid",
-			"ldapAttributeGroupMember":           "member",
-			"ldapAdminGroupName":                 "admin_group",
-			"ldapSoftDeleteUsers":                "true",
-			"ldapEnabled":                        "true",
-		}
-
-		for key, value := range ldapConfigs {
-			configVar := model.AppConfigVariable{Key: key, Value: value}
-			if err := tx.Create(&configVar).Error; err != nil {
-				return fmt.Errorf("failed to create config variable '%s': %w", key, err)
-			}
-		}
-		return nil
-	})
-
+	err := s.appConfigService.UpdateAppConfigValues(ctx,
+		"ldapUrl", "ldap://lldap:3890",
+		"ldapBindDn", "uid=admin,ou=people,dc=pocket-id,dc=org",
+		"ldapBindPassword", "admin_password",
+		"ldapBase", "dc=pocket-id,dc=org",
+		"ldapUserSearchFilter", "(objectClass=person)",
+		"ldapUserGroupSearchFilter", "(objectClass=groupOfNames)",
+		"ldapSkipCertVerify", "true",
+		"ldapAttributeUserUniqueIdentifier", "uuid",
+		"ldapAttributeUserUsername", "uid",
+		"ldapAttributeUserEmail", "mail",
+		"ldapAttributeUserFirstName", "givenName",
+		"ldapAttributeUserLastName", "sn",
+		"ldapAttributeGroupUniqueIdentifier", "uuid",
+		"ldapAttributeGroupName", "uid",
+		"ldapAttributeGroupMember", "member",
+		"ldapAdminGroupName", "admin_group",
+		"ldapSoftDeleteUsers", "true",
+		"ldapEnabled", "true",
+	)
 	if err != nil {
 		return fmt.Errorf("failed to set LDAP test config: %w", err)
-	}
-
-	if err := s.appConfigService.LoadDbConfig(ctx); err != nil {
-		return fmt.Errorf("failed to load app config: %w", err)
 	}
 
 	return nil
