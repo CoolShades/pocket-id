@@ -37,11 +37,10 @@ const (
 )
 
 type OidcService struct {
-	db               *gorm.DB
-	jwtService       *JwtService
-	appConfigService *AppConfigService
-	previewBuilder   oidcClientPreviewBuilder
-	scimService      *ScimService
+	db             *gorm.DB
+	jwtService     *JwtService
+	previewBuilder oidcClientPreviewBuilder
+	scimService    *ScimService
 
 	httpClient  *http.Client
 	fileStorage storage.FileStorage
@@ -54,20 +53,18 @@ type oidcClientPreviewBuilder interface {
 func NewOidcService(
 	db *gorm.DB,
 	jwtService *JwtService,
-	appConfigService *AppConfigService,
 	previewBuilder oidcClientPreviewBuilder,
 	scimService *ScimService,
 	httpClient *http.Client,
 	fileStorage storage.FileStorage,
 ) (s *OidcService, err error) {
 	s = &OidcService{
-		db:               db,
-		jwtService:       jwtService,
-		appConfigService: appConfigService,
-		previewBuilder:   previewBuilder,
-		scimService:      scimService,
-		httpClient:       httpClient,
-		fileStorage:      fileStorage,
+		db:             db,
+		jwtService:     jwtService,
+		previewBuilder: previewBuilder,
+		scimService:    scimService,
+		httpClient:     httpClient,
+		fileStorage:    fileStorage,
 	}
 
 	return s, nil
@@ -590,23 +587,11 @@ func (s *OidcService) ListAccessibleOidcClients(ctx context.Context, userID stri
 	query := tx.
 		WithContext(ctx).
 		Model(&model.OidcClient{}).
-		Preload("UserAuthorizedOidcClients", "user_id = ?", userID)
-
-	// If user has no groups, only return clients with no allowed user groups
-	if len(userGroupIDs) == 0 {
-		query = query.Where(`NOT EXISTS (
-        SELECT 1 FROM oidc_clients_allowed_user_groups
-        WHERE oidc_clients_allowed_user_groups.oidc_client_id = oidc_clients.id)`)
-	} else {
-		query = query.Where(`
-        NOT EXISTS (
-            SELECT 1 FROM oidc_clients_allowed_user_groups
-            WHERE oidc_clients_allowed_user_groups.oidc_client_id = oidc_clients.id
-        ) OR EXISTS (
-            SELECT 1 FROM oidc_clients_allowed_user_groups
-            WHERE oidc_clients_allowed_user_groups.oidc_client_id = oidc_clients.id
-            AND oidc_clients_allowed_user_groups.user_group_id IN (?))`, userGroupIDs)
-	}
+		Preload("UserAuthorizedOidcClients", "user_id = ?", userID).
+		Where(`oidc_clients.is_group_restricted = ? OR EXISTS (
+			SELECT 1 FROM oidc_clients_allowed_user_groups
+			WHERE oidc_clients_allowed_user_groups.oidc_client_id = oidc_clients.id
+			AND oidc_clients_allowed_user_groups.user_group_id IN (?))`, false, userGroupIDs)
 
 	var clients []model.OidcClient
 

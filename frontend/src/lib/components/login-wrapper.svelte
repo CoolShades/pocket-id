@@ -191,10 +191,15 @@
 		</div>
 	{/if}
 	<div
+<<<<<<< HEAD
 		class="flex h-screen items-center justify-center bg-cover bg-center text-center"
 		style={!useDynamic && backgroundImageExists
 			? `background-image: url(${cachedBackgroundImage.getUrl()});`
 			: ''}
+=======
+		class="flex min-h-dvh items-center justify-center bg-cover bg-center text-center"
+		style="background-image: url({cachedBackgroundImage.getUrl()});"
+>>>>>>> main
 	>
 		<Card.Root
 			class={{
