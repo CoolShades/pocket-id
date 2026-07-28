@@ -13,7 +13,6 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
-	"github.com/pocket-id/pocket-id/backend/internal/utils/email"
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
 
@@ -44,7 +43,7 @@ func (f fakeUserProvider) GetUser(ctx context.Context, userID string) (model.Use
 
 type fakeEmailSender struct{}
 
-func (fakeEmailSender) SendOneTimeAccessEmail(_ context.Context, _ *appconfig.AppConfigModel, _ email.Address, _ EmailData) error {
+func (fakeEmailSender) SendOneTimeAccessEmail(_ context.Context, _ *appconfig.AppConfigModel, _, _, _, _, _, _ string) error {
 	return nil
 }
 
@@ -98,6 +97,28 @@ func TestExchangeTokenSuccess(t *testing.T) {
 
 	// A sign-in audit log must have been created
 	require.Equal(t, []model.AuditLogEvent{model.AuditLogEventOneTimeAccessTokenSignIn}, auditLog.events)
+}
+
+func TestExchangeTokenAcceptsAmbiguousAliases(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+	svc, host, _ := newServiceForTest(t, db)
+
+	user := model.User{
+		Base:     model.Base{ID: "alias-user"},
+		Username: "alias-user",
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	const token = "a10bc2"
+	require.NoError(t, host.SetState(t.Context(), TokenActorType, token, TokenState{
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(time.Minute),
+	}, &actor.SetStateOpts{TTL: time.Minute}))
+
+	dbConfig := appconfig.NewTestConfig(nil)
+	exchangedUser, _, err := svc.ExchangeToken(t.Context(), dbConfig, "aIObc2", "", "", "")
+	require.NoError(t, err)
+	require.Equal(t, user.ID, exchangedUser.ID)
 }
 
 func TestExchangeTokenInvalidToken(t *testing.T) {

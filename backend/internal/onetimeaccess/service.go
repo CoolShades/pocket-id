@@ -16,7 +16,6 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
-	"github.com/pocket-id/pocket-id/backend/internal/utils/email"
 )
 
 // authenticationMethodOneTimePassword identifies one-time password/code authentication
@@ -112,15 +111,16 @@ func (s *Service) requestOneTimeAccessEmailInternal(ctx context.Context, userID,
 			linkWithCode = linkWithCode + "?redirect=" + encodedRedirectPath
 		}
 
-		innerErr := s.emailSender.SendOneTimeAccessEmail(innerCtx, dbConfig, email.Address{
-			Name:  user.FullName(),
-			Email: *user.Email,
-		}, EmailData{
-			Code:              oneTimeAccessToken,
-			LoginLink:         link,
-			LoginLinkWithCode: linkWithCode,
-			ExpirationString:  utils.DurationToString(ttl),
-		})
+		innerErr := s.emailSender.SendOneTimeAccessEmail(
+			innerCtx,
+			dbConfig,
+			user.FullName(),
+			*user.Email,
+			oneTimeAccessToken,
+			link,
+			linkWithCode,
+			utils.DurationToString(ttl),
+		)
 		if innerErr != nil {
 			slog.ErrorContext(innerCtx, "Failed to send one-time access token email", slog.Any("error", innerErr), slog.String("address", *user.Email))
 			return
@@ -148,6 +148,8 @@ func (s *Service) CreateToken(ctx context.Context, userID string, ttl time.Durat
 }
 
 func (s *Service) ExchangeToken(ctx context.Context, dbConfig *appconfig.AppConfigModel, token, deviceToken, ipAddress, userAgent string) (model.User, string, error) {
+	token = utils.NormalizeUnambiguousString(token)
+
 	// Consume the token by invoking its actor: this atomically validates it and, if valid, deletes it.
 	// It must happen outside of a DB transaction, since invoking an actor while a transaction is open would deadlock on SQLite.
 	res, err := s.actorService.Invoke(ctx, TokenActorType, token, tokenMethodConsume, tokenConsumeRequest{
