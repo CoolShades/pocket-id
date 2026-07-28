@@ -1,6 +1,7 @@
 package usersignup
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -16,10 +17,10 @@ const defaultSignupTokenDuration = time.Hour
 
 type handler struct {
 	service   *Service
-	appConfig AppConfigProvider
+	appConfig AppConfigResolver
 }
 
-func newHandler(service *Service, appConfig AppConfigProvider) *handler {
+func newHandler(service *Service, appConfig AppConfigResolver) *handler {
 	return &handler{service: service, appConfig: appConfig}
 }
 
@@ -48,25 +49,33 @@ func (h *handler) checkInitialAdminSetupAvailable(c *gin.Context) {
 // @Success 200 {object} dto.UserDto
 // @Router /api/signup/setup [post]
 func (h *handler) signUpInitialAdmin(c *gin.Context) {
+	config, err := h.appConfig.GetConfig(c.Request.Context())
+	if err != nil {
+		_ = c.Error(fmt.Errorf("error loading app configuration: %w", err))
+		return
+	}
+
 	var input signUpDto
-	if err := dto.ShouldBindWithNormalizedJSON(c, &input); err != nil {
+	err = dto.ShouldBindWithNormalizedJSON(c, &input)
+	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	user, token, err := h.service.SignUpInitialAdmin(c.Request.Context(), input)
+	user, token, err := h.service.SignUpInitialAdmin(c.Request.Context(), config, input)
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 
 	var userDto dto.UserDto
-	if err := dto.MapStruct(user, &userDto); err != nil {
+	err = dto.MapStruct(user, &userDto)
+	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	maxAge := int(h.appConfig.GetDbConfig().SessionDuration.AsDurationMinutes().Seconds())
+	maxAge := int(config.SessionDuration.AsDurationMinutes().Seconds())
 	cookie.AddAccessTokenCookie(c, maxAge, token)
 
 	c.JSON(http.StatusOK, userDto)
@@ -129,7 +138,8 @@ func (h *handler) listSignupTokens(c *gin.Context) {
 	}
 
 	var tokensDto []signupTokenDto
-	if err := dto.MapStructList(tokens, &tokensDto); err != nil {
+	err = dto.MapStructList(tokens, &tokensDto)
+	if err != nil {
 		_ = c.Error(err)
 		return
 	}
@@ -169,26 +179,31 @@ func (h *handler) deleteSignupToken(c *gin.Context) {
 // @Success 201 {object} dto.UserDto
 // @Router /api/signup [post]
 func (h *handler) signup(c *gin.Context) {
-	var input signUpDto
-	if err := dto.ShouldBindWithNormalizedJSON(c, &input); err != nil {
-		_ = c.Error(err)
+	config, err := h.appConfig.GetConfig(c.Request.Context())
+	if err != nil {
+		_ = c.Error(fmt.Errorf("error loading app configuration: %w", err))
 		return
 	}
 
-	ipAddress := c.ClientIP()
-	userAgent := c.GetHeader("User-Agent")
-
-	user, accessToken, err := h.service.SignUp(c.Request.Context(), input, ipAddress, userAgent)
+	var input signUpDto
+	err = dto.ShouldBindWithNormalizedJSON(c, &input)
 	if err != nil {
 		_ = c.Error(err)
 		return
 	}
 
-	maxAge := int(h.appConfig.GetDbConfig().SessionDuration.AsDurationMinutes().Seconds())
+	user, accessToken, err := h.service.SignUp(c.Request.Context(), config, input, c.ClientIP(), c.GetHeader("User-Agent"))
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+
+	maxAge := int(config.SessionDuration.AsDurationMinutes().Seconds())
 	cookie.AddAccessTokenCookie(c, maxAge, accessToken)
 
 	var userDto dto.UserDto
-	if err := dto.MapStruct(user, &userDto); err != nil {
+	err = dto.MapStruct(user, &userDto)
+	if err != nil {
 		_ = c.Error(err)
 		return
 	}

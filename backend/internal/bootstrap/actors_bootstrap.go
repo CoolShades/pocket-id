@@ -18,7 +18,6 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/job"
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/crypto"
 )
@@ -28,7 +27,7 @@ type NewActorsOpts struct {
 	Postgres *pgxpool.Pool
 
 	EnvConfig   *common.EnvConfigSchema
-	AppConfig   *service.AppConfigService
+	InstanceID  string
 	HttpClient  *http.Client
 	DB          *gorm.DB
 	FileStorage storage.FileStorage
@@ -50,21 +49,13 @@ func NewActors(o NewActorsOpts) (*local.Host, map[string]*ratelimit.RateLimitSer
 		local.WithLogger(log.With("scope", "actor-host")),
 		local.WithRuntimePSKs(psk),
 		local.WithShutdownGracePeriod(10 * time.Second),
+		// TODO: Tweak these values once Pocket ID fully supports horizontal scaling.
+		// The relaxed intervals are appropriate for a single active host, but should be
+		// tuned for lower latency and better distribution across a multi-host cluster.
+		local.WithHostHealthCheckDeadline(90 * time.Second),
+		local.WithAlarmsPollInterval(5 * time.Minute),
+		local.WithAlarmsFetchAheadInterval(5 * time.Minute),
 	}
-
-	// Add all cron jobs
-	cronjobs, err := o.getCronJobs()
-	if err != nil {
-		return nil, nil, err
-	}
-	opts = append(opts, cronjobs...)
-
-	// Add the rate limiters
-	rateLimiters, rateLimiterOpts, err := o.getRateLimiters()
-	if err != nil {
-		return nil, nil, err
-	}
-	opts = append(opts, rateLimiterOpts...)
 
 	// Add the database connection
 	providerOpt, err := o.getProvider()
@@ -79,6 +70,18 @@ func NewActors(o NewActorsOpts) (*local.Host, map[string]*ratelimit.RateLimitSer
 		return nil, nil, fmt.Errorf("failed to create actor host: %w", err)
 	}
 
+	// Add all cron jobs
+	err = o.registerCronJobs(h)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Add the rate limiters
+	rateLimiters, err := o.registerRateLimiters(h)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// Bind a service for each rate limiter so the middleware can invoke them
 	rateLimitServices := make(map[string]*ratelimit.RateLimitService, len(rateLimiters))
 	for name, rl := range rateLimiters {
@@ -90,8 +93,37 @@ func NewActors(o NewActorsOpts) (*local.Host, map[string]*ratelimit.RateLimitSer
 
 // Derive a PSK from the global encryption key
 func (o *NewActorsOpts) getPSK() ([]byte, error) {
+	// This is tied to the instance ID of the Pocket ID deployment/cluster
 	// Note: changing the key derivation or the seed is a breaking change
-	return crypto.DeriveKey(o.EnvConfig.EncryptionKey, "pocketid/actors-psk")
+	return crypto.DeriveKey(o.EnvConfig.EncryptionKey, "pocketid/actors-psk/"+o.InstanceID)
+}
+
+// NewActorStateStore creates a minimal actor host that can read and write actor state directly, without joining the cluster or binding a network port.
+// It's meant for short-lived contexts such as CLI commands that need to persist actor state (for example, one-time access tokens) without running the full actor host.
+// The returned host must NOT be Run(): only direct state operations (Get/Set/Delete on state) are supported, and they require the actor state tables to already exist, which is the case whenever the server has run at least once against this database.
+func NewActorStateStore(db *gorm.DB, pg *pgxpool.Pool) (*local.Host, error) {
+	opts := &NewActorsOpts{DB: db, Postgres: pg}
+	if pg == nil {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get *sql.DB connection from Gorm: %w", err)
+		}
+		opts.SQLite = sqlDB
+	}
+
+	providerOpt, err := opts.getProvider()
+	if err != nil {
+		return nil, err
+	}
+
+	return local.NewHost(
+		// The address is required by the host but never bound, since the host is not Run
+		local.WithAddress("127.0.0.1:1"),
+		local.WithLogger(slog.Default().With("scope", "actor-state-store")),
+		// The health-check deadline only needs to exceed the provider's query timeout to pass validation
+		local.WithHostHealthCheckDeadline(90*time.Second),
+		providerOpt,
+	)
 }
 
 func (o *NewActorsOpts) getProvider() (local.HostOption, error) {
@@ -111,37 +143,44 @@ func (o *NewActorsOpts) getProvider() (local.HostOption, error) {
 	}
 }
 
-func (o *NewActorsOpts) getCronJobs() (opts []local.HostOption, err error) {
+func (o *NewActorsOpts) registerCronJobs(host *local.Host) (err error) {
 	// In test mode, we do not register anything
 	if common.EnvConfig.AppEnv == "test" {
-		return opts, nil
+		return nil
 	}
 
 	// Register the analytics job
-	analyticsJob, err := job.GetAnalyticsJob(o.AppConfig, o.HttpClient)
+	analyticsJob, err := job.GetAnalyticsJob(o.HttpClient, o.InstanceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get analytics cron job: %w", err)
+		return fmt.Errorf("failed to get analytics cron job: %w", err)
 	}
+
+	// This could be nil if analytics are disabled
 	if analyticsJob != nil {
-		// This could be nil if analytics are disabled
-		opts = append(opts, local.WithBuiltInActor(analyticsJob))
+		err = host.RegisterBuiltInActor(analyticsJob)
+		if err != nil {
+			return fmt.Errorf("error registering built-in actor for analytics job: %w", err)
+		}
 	}
 
 	// Register the file cleanup jobs
 	fileCleanupJobs, err := job.GetFileCleanupJobs(o.DB, o.FileStorage)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get file cleanup cron jobs: %w", err)
+		return fmt.Errorf("failed to get file cleanup cron jobs: %w", err)
 	}
 	for _, j := range fileCleanupJobs {
-		opts = append(opts, local.WithBuiltInActor(j))
+		err = host.RegisterBuiltInActor(j)
+		if err != nil {
+			return fmt.Errorf("error registering built-in actor for cleanup job: %w", err)
+		}
 	}
 
-	return opts, nil
+	return nil
 }
 
-// getRateLimiters creates a built-in rate-limit actor for each middleware policy and returns both the created actors (keyed by policy name) and the host options to register them
+// registerRateLimiters creates a built-in rate-limit actor for each middleware policy and returns both the created actors (keyed by policy name) and the host options to register them
 // Unlike cron jobs, rate limiters keep no durable state, so they are registered in every environment
-func (o *NewActorsOpts) getRateLimiters() (actors map[string]*ratelimit.RateLimit, opts []local.HostOption, err error) {
+func (o *NewActorsOpts) registerRateLimiters(host *local.Host) (actors map[string]*ratelimit.RateLimit, err error) {
 	policies := middleware.RateLimitPolicies()
 	actors = make(map[string]*ratelimit.RateLimit, len(policies))
 	for _, p := range policies {
@@ -152,11 +191,15 @@ func (o *NewActorsOpts) getRateLimiters() (actors map[string]*ratelimit.RateLimi
 			ratelimit.WithBurst(p.Burst),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("error creating rate limiter %q: %w", p.Name, err)
+			return nil, fmt.Errorf("error creating rate limiter %q: %w", p.Name, err)
 		}
 		actors[p.Name] = rl
-		opts = append(opts, local.WithBuiltInActor(rl))
+
+		err = host.RegisterBuiltInActor(rl)
+		if err != nil {
+			return nil, fmt.Errorf("error registering built-in actor for rate limiter '%s': %w", p.Name, err)
+		}
 	}
 
-	return actors, opts, nil
+	return actors, nil
 }
