@@ -41,7 +41,7 @@
 
 			try {
 				goto(data.redirect);
-			} catch (e) {
+			} catch {
 				error = m.invalid_redirect_url();
 			}
 		} catch (e) {
@@ -87,13 +87,14 @@
 					placeholder={m.code()}
 					aria-label={m.code()}
 					bind:value={code}
+					autofocus
 					type="text"
 				/>
 			{:else}
-				<InputOTP.Root maxlength={6} bind:value={code}>
+				<InputOTP.Root maxlength={6} bind:value={code} autofocus>
 					{#snippet children({ cells })}
 						<InputOTP.Group>
-							{#each cells as cell}
+							{#each cells as cell (cell)}
 								<InputOTP.Slot {cell} />
 							{/each}
 						</InputOTP.Group>

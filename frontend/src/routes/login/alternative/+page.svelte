@@ -5,7 +5,12 @@
 	import * as Item from '$lib/components/ui/item/index.js';
 	import { m } from '$lib/paraglide/messages';
 	import appConfigStore from '$lib/stores/application-configuration-store';
-	import { LucideChevronRight, LucideMail, LucideRectangleEllipsis } from '@lucide/svelte';
+	import {
+		LucideChevronRight,
+		LucideMail,
+		LucideQrCode,
+		LucideRectangleEllipsis
+	} from '@lucide/svelte';
 
 	const methods = [
 		{
@@ -13,6 +18,12 @@
 			title: m.login_code(),
 			description: m.enter_a_login_code_to_sign_in(),
 			href: '/login/alternative/code'
+		},
+		{
+			icon: LucideQrCode,
+			title: m.sign_in_with_another_device(),
+			description: m.sign_in_with_another_device_description(),
+			href: '/login/alternative/device'
 		}
 	];
 
@@ -40,7 +51,7 @@
 			{m.if_you_do_not_have_access_to_your_passkey_you_can_sign_in_using_one_of_the_following_methods()}
 		</p>
 		<Item.Group class="mt-5 gap-3">
-			{#each methods as method}
+			{#each methods as method (method.href)}
 				<Item.Root variant="outline" class="gap-5">
 					{#snippet child({ props })}
 						<a href={method.href + page.url.search} {...props}>
