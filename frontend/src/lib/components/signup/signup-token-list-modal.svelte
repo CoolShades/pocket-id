@@ -121,7 +121,7 @@
 		}
 	];
 
-	const actions: CreateAdvancedTableActions<SignupToken> = (_) => [
+	const actions: CreateAdvancedTableActions<SignupToken> = () => [
 		{
 			label: m.copy(),
 			icon: Copy,
@@ -172,6 +172,7 @@
 				id="signup-token-list"
 				withoutSearch={true}
 				fetchCallback={userService.listSignupTokens}
+				defaultSort={{ column: 'createdAt', direction: 'asc' }}
 				bind:this={tableRef}
 				{columns}
 				{actions}

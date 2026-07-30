@@ -12,7 +12,6 @@ import (
 	"github.com/ory/fosite/compose"
 	fositeoauth2 "github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/openid"
-	"github.com/ory/fosite/handler/rfc8628"
 	"github.com/ory/fosite/token/jwt"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	"golang.org/x/crypto/hkdf"
@@ -20,7 +19,7 @@ import (
 
 type oidcProvider struct {
 	fosite.OAuth2Provider
-	deviceStrategy *rfc8628.DefaultDeviceStrategy
+	deviceStrategy *deviceStrategy
 	tokenStrategies
 }
 
@@ -49,6 +48,7 @@ func newProvider(store *Store, authenticator *federatedClientAuthenticator, sign
 		IgnoreUnknownScopes:                     true,
 		AudienceMatchingStrategy:                fosite.ExactAudienceMatchingStrategy,
 		RedirectURIMatcher:                      matchRedirectURI,
+		RedirectSecureChecker:                   redirectSecureChecker(config.AllowInsecureCallbackURLs),
 		EnforcePKCEForPublicClients:             true,
 		EnablePKCEPlainChallengeMethod:          true,
 		SupportedRequestObjectSigningAlgorithms: []string{"none"},
@@ -63,7 +63,7 @@ func newProvider(store *Store, authenticator *federatedClientAuthenticator, sign
 	}
 	sig := newJWTSigner(keyGetter)
 	coreStrategy := compose.NewOAuth2HMACStrategy(fositeConfig)
-	deviceStrategy := compose.NewDeviceStrategy(fositeConfig)
+	deviceStrategy := &deviceStrategy{DefaultDeviceStrategy: compose.NewDeviceStrategy(fositeConfig)}
 	accessTokenStrategy := &fositeoauth2.DefaultJWTStrategy{
 		Signer:          sig,
 		HMACSHAStrategy: coreStrategy,
@@ -109,6 +109,17 @@ func newProvider(store *Store, authenticator *federatedClientAuthenticator, sign
 			config:      fositeConfig,
 		},
 	}, nil
+}
+
+func redirectSecureChecker(allowInsecureCallbackURLs bool) func(context.Context, *url.URL) bool {
+	return func(ctx context.Context, redirectURI *url.URL) bool {
+		if allowInsecureCallbackURLs || fosite.IsRedirectURISecure(ctx, redirectURI) {
+			return true
+		}
+
+		slog.InfoContext(ctx, "HTTP callback URL rejected; set ALLOW_INSECURE_CALLBACK_URLS=true to allow it", "callback_url", redirectURI.Redacted())
+		return false
+	}
 }
 
 func matchRedirectURI(rawurl string, client fosite.Client) (*url.URL, error) {
