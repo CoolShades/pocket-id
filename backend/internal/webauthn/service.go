@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
@@ -23,17 +24,19 @@ import (
 // It must match the value emitted by the JWT service in the access token's "amr" claim
 const authenticationMethodPhishingResistant = "phr"
 
+const defaultRPDisplayName = "Pocket ID"
+
 type Service struct {
-	db        *gorm.DB
-	webAuthn  *gowebauthn.WebAuthn
-	signer    TokenService
-	auditLog  AuditLogger
-	appConfig AppConfigProvider
+	db       *gorm.DB
+	webAuthn *gowebauthn.WebAuthn
+	signer   TokenService
+	auditLog AuditLogger
 }
 
 func newService(deps Dependencies) (*Service, error) {
 	wa, err := gowebauthn.New(&gowebauthn.Config{
-		RPDisplayName: deps.AppConfig.GetDbConfig().AppName.Value,
+		// Set a default value, it will be set again later
+		RPDisplayName: defaultRPDisplayName,
 		RPID:          utils.GetHostnameFromURL(deps.AppURL),
 		RPOrigins:     []string{deps.AppURL},
 		AuthenticatorSelection: protocol.AuthenticatorSelection{
@@ -57,21 +60,20 @@ func newService(deps Dependencies) (*Service, error) {
 	}
 
 	return &Service{
-		db:        deps.DB,
-		webAuthn:  wa,
-		signer:    deps.Signer,
-		auditLog:  deps.AuditLog,
-		appConfig: deps.AppConfig,
+		db:       deps.DB,
+		webAuthn: wa,
+		signer:   deps.Signer,
+		auditLog: deps.AuditLog,
 	}, nil
 }
 
-func (s *Service) BeginRegistration(ctx context.Context, userID string) (*PublicKeyCredentialCreationOptions, error) {
+func (s *Service) BeginRegistration(ctx context.Context, dbConfig *appconfig.AppConfigModel, userID string) (*PublicKeyCredentialCreationOptions, error) {
+	s.updateWebAuthnConfig(dbConfig)
+
 	tx := s.db.Begin()
 	defer func() {
 		tx.Rollback()
 	}()
-
-	s.updateWebAuthnConfig()
 
 	var user model.User
 	err := tx.
@@ -128,24 +130,27 @@ func (s *Service) VerifyRegistration(ctx context.Context, sessionID string, user
 
 	// Load & delete the session row
 	var storedSession WebauthnSession
-	err := tx.
+	result := tx.
 		WithContext(ctx).
 		Clauses(clause.Returning{}).
-		Delete(&storedSession, "id = ?", sessionID).
-		Error
-	if err != nil {
-		return model.WebauthnCredential{}, fmt.Errorf("failed to load WebAuthn session: %w", err)
+		Delete(&storedSession, "id = ?", sessionID)
+	if result.Error != nil {
+		return model.WebauthnCredential{}, fmt.Errorf("failed to load WebAuthn session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return model.WebauthnCredential{}, &common.InvalidWebauthnSessionError{}
 	}
 
 	session := gowebauthn.SessionData{
-		Challenge:  storedSession.Challenge,
-		Expires:    storedSession.ExpiresAt.ToTime(),
-		CredParams: storedSession.CredentialParams,
-		UserID:     []byte(userID),
+		Challenge:        storedSession.Challenge,
+		Expires:          storedSession.ExpiresAt.ToTime(),
+		CredParams:       storedSession.CredentialParams,
+		UserVerification: protocol.UserVerificationRequirement(storedSession.UserVerification),
+		UserID:           []byte(userID),
 	}
 
 	var user model.User
-	err = tx.
+	err := tx.
 		WithContext(ctx).
 		Find(&user, "id = ?", userID).
 		Error
@@ -227,7 +232,7 @@ func (s *Service) BeginLogin(ctx context.Context) (*PublicKeyCredentialRequestOp
 	}, nil
 }
 
-func (s *Service) VerifyLogin(ctx context.Context, sessionID string, credentialAssertionData *protocol.ParsedCredentialAssertionData, ipAddress, userAgent string) (model.User, string, error) {
+func (s *Service) VerifyLogin(ctx context.Context, dbConfig *appconfig.AppConfigModel, sessionID string, credentialAssertionData *protocol.ParsedCredentialAssertionData, ipAddress, userAgent string) (model.User, string, error) {
 	tx := s.db.Begin()
 	defer func() {
 		tx.Rollback()
@@ -235,22 +240,26 @@ func (s *Service) VerifyLogin(ctx context.Context, sessionID string, credentialA
 
 	// Load & delete the session row
 	var storedSession WebauthnSession
-	err := tx.
+	result := tx.
 		WithContext(ctx).
 		Clauses(clause.Returning{}).
-		Delete(&storedSession, "id = ?", sessionID).
-		Error
-	if err != nil {
-		return model.User{}, "", fmt.Errorf("failed to load WebAuthn session: %w", err)
+		Delete(&storedSession, "id = ?", sessionID)
+	if result.Error != nil {
+		return model.User{}, "", fmt.Errorf("failed to load WebAuthn session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return model.User{}, "", &common.InvalidWebauthnSessionError{}
 	}
 
 	session := gowebauthn.SessionData{
-		Challenge: storedSession.Challenge,
-		Expires:   storedSession.ExpiresAt.ToTime(),
+		Challenge:        storedSession.Challenge,
+		Expires:          storedSession.ExpiresAt.ToTime(),
+		UserVerification: protocol.UserVerificationRequirement(storedSession.UserVerification),
+		CredParams:       storedSession.CredentialParams,
 	}
 
 	var user *model.User
-	_, err = s.webAuthn.ValidateDiscoverableLogin(func(_, userHandle []byte) (gowebauthn.User, error) {
+	_, err := s.webAuthn.ValidateDiscoverableLogin(func(_, userHandle []byte) (gowebauthn.User, error) {
 		innerErr := tx.
 			WithContext(ctx).
 			Preload("Credentials").
@@ -270,12 +279,12 @@ func (s *Service) VerifyLogin(ctx context.Context, sessionID string, credentialA
 		return model.User{}, "", &common.UserDisabledError{}
 	}
 
-	token, err := s.signer.GenerateAccessToken(*user, authenticationMethodPhishingResistant)
+	token, err := s.signer.GenerateAccessToken(*user, authenticationMethodPhishingResistant, dbConfig.SessionDuration.AsDurationMinutes())
 	if err != nil {
 		return model.User{}, "", err
 	}
 
-	s.auditLog.CreateNewSignInWithEmail(ctx, ipAddress, userAgent, user.ID, tx)
+	s.auditLog.CreateNewSignInWithEmail(ctx, ipAddress, userAgent, user.ID, tx, dbConfig.EmailLoginNotificationEnabled.IsTrue())
 
 	err = tx.Commit().Error
 	if err != nil {
@@ -373,8 +382,8 @@ func (s *Service) UpdateCredential(ctx context.Context, userID, credentialID, na
 }
 
 // updateWebAuthnConfig updates the WebAuthn configuration with the app name as it can change during runtime
-func (s *Service) updateWebAuthnConfig() {
-	s.webAuthn.Config.RPDisplayName = s.appConfig.GetDbConfig().AppName.Value
+func (s *Service) updateWebAuthnConfig(dbConfig *appconfig.AppConfigModel) {
+	s.webAuthn.Config.RPDisplayName = dbConfig.AppName.String()
 }
 
 func (s *Service) CreateReauthenticationTokenWithAccessToken(ctx context.Context, accessToken string) (string, error) {
@@ -437,23 +446,27 @@ func (s *Service) CreateReauthenticationTokenWithWebauthn(ctx context.Context, s
 
 	// Retrieve and delete the session
 	var storedSession WebauthnSession
-	err := tx.
+	result := tx.
 		WithContext(ctx).
 		Clauses(clause.Returning{}).
-		Delete(&storedSession, "id = ? AND expires_at > ?", sessionID, datatype.DateTime(time.Now())).
-		Error
-	if err != nil {
-		return "", fmt.Errorf("failed to load WebAuthn session: %w", err)
+		Delete(&storedSession, "id = ? AND expires_at > ?", sessionID, datatype.DateTime(time.Now()))
+	if result.Error != nil {
+		return "", fmt.Errorf("failed to load WebAuthn session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return "", &common.InvalidWebauthnSessionError{}
 	}
 
 	session := gowebauthn.SessionData{
-		Challenge: storedSession.Challenge,
-		Expires:   storedSession.ExpiresAt.ToTime(),
+		Challenge:        storedSession.Challenge,
+		Expires:          storedSession.ExpiresAt.ToTime(),
+		UserVerification: protocol.UserVerificationRequirement(storedSession.UserVerification),
+		CredParams:       storedSession.CredentialParams,
 	}
 
 	// Validate the credential assertion
 	var user *model.User
-	_, err = s.webAuthn.ValidateDiscoverableLogin(func(_, userHandle []byte) (gowebauthn.User, error) {
+	_, err := s.webAuthn.ValidateDiscoverableLogin(func(_, userHandle []byte) (gowebauthn.User, error) {
 		innerErr := tx.
 			WithContext(ctx).
 			Preload("Credentials").

@@ -36,7 +36,10 @@
 		{ href: '/settings/admin/oidc-clients', label: m.oidc_clients() },
 		{ href: '/settings/admin/apis', label: m.apis() },
 		{ href: '/settings/admin/api-keys', label: m.api_keys() },
-		{ href: '/settings/admin/application-configuration', label: m.application_configuration() }
+		{
+			href: '/settings/admin/application-configuration',
+			label: m.application_configuration()
+		}
 	];
 
 	if (user?.isAdmin || $userStore?.isAdmin) {
@@ -50,7 +53,7 @@
 	>
 		<main
 			in:fade={{ duration: 200 }}
-			class="mx-auto flex w-full max-w-[1640px] flex-col gap-x-8 gap-y-8 p-4 md:p-8 lg:flex-row"
+			class="mx-auto flex w-full max-w-[1720px] flex-col gap-x-8 gap-y-8 p-4 md:p-8 lg:flex-row"
 		>
 			<div class="min-w-[200px] xl:min-w-[250px]">
 				<div in:fly={{ x: -15, duration: 200 }} class="sticky top-6">
@@ -63,7 +66,7 @@
 				</div>
 			</div>
 
-			<div class="flex w-full flex-col gap-4 overflow-hidden pb-2">
+			<div class="flex w-full flex-col gap-4 overflow-hidden pb-2 px-2">
 				<FadeWrapper>
 					<EmailVerificationStateBox />
 					{@render children()}
