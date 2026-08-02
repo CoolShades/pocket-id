@@ -87,6 +87,21 @@ jobs:
           # `label create` on fork checkouts, which is wrong — we want the fork.
           GH_REPO: ${{ github.repository }}
         run: |
+          # If a previous sync-conflict PR is still open, do not open another one.
+          # The branch name is date-stamped, so without this check every failing
+          # run opens a brand-new PR and they pile up unresolved (see #18-#32).
+          # The older PR must be resolved first; it is based on an older main,
+          # and the next run picks up whatever is still outstanding.
+          EXISTING=$(gh pr list \
+            --base ${{ env.TARGET_BRANCH }} \
+            --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync-conflict/"))] | .[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "::error::Sync conflict from main into ${{ env.TARGET_BRANCH }}, and PR #${EXISTING} is still open. Resolve and merge it first — no new PR was opened."
+            exit 1
+          fi
+
           DATE=$(date -u +%Y-%m-%d)
           BRANCH="sync-conflict/${DATE}"
           git checkout -B "$BRANCH" ${{ env.TARGET_BRANCH }}

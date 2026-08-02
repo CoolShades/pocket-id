@@ -7,7 +7,6 @@ on:
       - "frontend/src/**"
       - ".github/svelte-check-matcher.json"
       - "frontend/package.json"
-      - "frontend/package-lock.json"
       - "frontend/tsconfig.json"
       - "frontend/svelte.config.js"
   pull_request:
@@ -16,7 +15,6 @@ on:
       - "frontend/src/**"
       - ".github/svelte-check-matcher.json"
       - "frontend/package.json"
-      - "frontend/package-lock.json"
       - "frontend/tsconfig.json"
       - "frontend/svelte.config.js"
   workflow_dispatch:
@@ -25,7 +23,6 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
-  id-token: write
 
 jobs:
   type-check:
@@ -42,7 +39,7 @@ jobs:
         uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.5.0
         with:
           node-version: 24
           cache: "pnpm"

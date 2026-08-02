@@ -1,20 +1,13 @@
 <script lang="ts">
-	import CollapsibleCard from '$lib/components/collapsible-card.svelte';
 	import * as Alert from '$lib/components/ui/alert';
+	import * as Card from '$lib/components/ui/card';
+	import * as Tabs from '$lib/components/ui/tabs';
 	import { m } from '$lib/paraglide/messages';
 	import AppConfigService from '$lib/services/app-config-service';
 	import appConfigStore from '$lib/stores/application-configuration-store';
 	import type { AllAppConfig } from '$lib/types/application-configuration.type';
 	import { axiosErrorToast } from '$lib/utils/error-util';
-	import {
-		LucideImage,
-		LucideInfo,
-		Mail,
-		Sparkles,
-		SlidersHorizontal,
-		UserSearch,
-		Users
-	} from '@lucide/svelte';
+	import { LucideInfo } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
 	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
@@ -103,70 +96,102 @@
 		</Alert.Description>
 	</Alert.Root>
 {/if}
-<div>
-	<CollapsibleCard
-		id="application-configuration-general"
-		icon={SlidersHorizontal}
-		title={m.general()}
-		defaultExpanded
-	>
-		{#key appConfig.accentColor}
-			<AppConfigGeneralForm {appConfig} callback={updateAppConfig} />
-		{/key}
-	</CollapsibleCard>
-</div>
+<Tabs.Root value="general" useHash class="gap-4">
+	<div class="overflow-x-auto pb-1">
+		<Tabs.List variant="line" class="min-w-max">
+			<Tabs.Trigger value="general">
+				{m.general()}
+			</Tabs.Trigger>
+			<Tabs.Trigger value="user-creation">
+				{m.user_creation()}
+			</Tabs.Trigger>
+			<Tabs.Trigger value="email">
+				{m.email()}
+			</Tabs.Trigger>
+			<Tabs.Trigger value="ldap">
+				{m.ldap()}
+			</Tabs.Trigger>
+			<Tabs.Trigger value="images">
+				{m.images()}
+			</Tabs.Trigger>
+			<Tabs.Trigger value="dynamic-background">
+				{m.dynamic_background()}
+			</Tabs.Trigger>
+		</Tabs.List>
+	</div>
 
-<div>
-	<CollapsibleCard
-		id="application-configuration-signup-defaults"
-		icon={Users}
-		title={m.user_creation()}
-		description={m.configure_user_creation()}
-	>
-		<AppConfigSignupDefaultsForm {appConfig} callback={updateAppConfig} />
-	</CollapsibleCard>
-</div>
+	<Tabs.Content value="general" id="application-configuration-general">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.general()}</Card.Title>
+			</Card.Header>
+			<Card.Content>
+				{#key appConfig.accentColor}
+					<AppConfigGeneralForm {appConfig} callback={updateAppConfig} />
+				{/key}
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
 
-<div>
-	<CollapsibleCard
-		id="application-configuration-email"
-		icon={Mail}
-		title={m.email()}
-		description={m.configure_smtp_to_send_emails()}
-	>
-		<AppConfigEmailForm {appConfig} callback={updateAppConfig} />
-	</CollapsibleCard>
-</div>
+	<Tabs.Content value="user-creation" id="application-configuration-signup-defaults">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.user_creation()}</Card.Title>
+				<Card.Description>{m.configure_user_creation()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigSignupDefaultsForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
 
-<div>
-	<CollapsibleCard
-		id="application-configuration-ldap"
-		icon={UserSearch}
-		title={m.ldap()}
-		description={m.configure_ldap_settings_to_sync_users_and_groups_from_an_ldap_server()}
-	>
-		<AppConfigLdapForm {appConfig} callback={updateAppConfig} />
-	</CollapsibleCard>
-</div>
+	<Tabs.Content value="email" id="application-configuration-email">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.email()}</Card.Title>
+				<Card.Description>{m.configure_smtp_to_send_emails()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigEmailForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
 
-<div>
-	<CollapsibleCard
-		id="application-configuration-images"
-		icon={LucideImage}
-		title={m.images()}
-		description={m.configure_application_images()}
-	>
-		<UpdateApplicationImages callback={updateImages} />
-	</CollapsibleCard>
-</div>
+	<Tabs.Content value="ldap" id="application-configuration-ldap">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.ldap()}</Card.Title>
+				<Card.Description>
+					{m.configure_ldap_settings_to_sync_users_and_groups_from_an_ldap_server()}
+				</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigLdapForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
 
-<div>
-	<CollapsibleCard
-		id="application-configuration-dynamic-background"
-		icon={Sparkles}
-		title={m.dynamic_background()}
-		description={m.dynamic_background_description()}
-	>
-		<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
-	</CollapsibleCard>
-</div>
+	<Tabs.Content value="images" id="application-configuration-images">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.images()}</Card.Title>
+				<Card.Description>{m.configure_application_images()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<UpdateApplicationImages callback={updateImages} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="dynamic-background" id="application-configuration-dynamic-background">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.dynamic_background()}</Card.Title>
+				<Card.Description>{m.dynamic_background_description()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+</Tabs.Root>

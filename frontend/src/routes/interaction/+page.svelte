@@ -120,14 +120,16 @@
 			{errorMessage}.
 		{:else if currentStep == 'select_account' && $userStore}
 			<FormattedMessage
-				m={m.account_selection_signin_confirmation({ name: interactionSession.client.name })}
+				message={m.account_selection_signin_confirmation}
+				inputs={{ name: interactionSession.client.name }}
 			/>
 		{:else}
 			<FormattedMessage
-				m={m.do_you_want_to_sign_in_to_client_with_your_app_name_account({
+				message={m.do_you_want_to_sign_in_to_client_with_your_app_name_account}
+				inputs={{
 					client: interactionSession.client.name,
 					appName: $appConfigStore.appName
-				})}
+				}}
 			/>
 		{/if}
 	</p>
@@ -140,7 +142,7 @@
 			data-testid="account-selection"
 		>
 			{#if $userStore}
-				<Card.Root class="mb-2 py-4 w-sm">
+				<Card.Root class="mb-2 py-4 sm:min-w-sm w-full mx-5">
 					<Card.Content class="flex items-center gap-4">
 						<Avatar.Root class="size-11 shrink-0">
 							<Avatar.Image src={cachedProfilePicture.getUrl($userStore.id)} />
@@ -174,15 +176,16 @@
 				<Card.Header>
 					<p class="text-muted-foreground text-start">
 						<FormattedMessage
-							m={m.client_wants_to_access_the_following_information({
+							message={m.client_wants_to_access_the_following_information}
+							inputs={{
 								client: interactionSession.client.name
-							})}
+							}}
 						/>
 					</p>
 				</Card.Header>
 				<Card.Content>
 					<ScopeList
-						scopes={(interactionSession.scopes || [])}
+						scopes={interactionSession.scopes || []}
 						scopeInfo={interactionSession.scopeInfo ?? []}
 					/>
 				</Card.Content>

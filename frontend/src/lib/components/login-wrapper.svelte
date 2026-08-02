@@ -101,23 +101,12 @@
 	// Drives the side-by-side desktop layout and the transparent-card mobile fallback.
 	let hasVisibleBackground = $derived(useDynamic || backgroundImageExists === true);
 
-	let alternativeSignInButton = $state({
-		href: '/login/alternative',
+	let alternativeSignInButton = $derived({
+		href:
+			page.url.pathname === '/login'
+				? `/login/alternative${page.url.search}`
+				: `/login/alternative?redirect=${encodeURIComponent(page.url.pathname + page.url.search)}`,
 		label: m.alternative_sign_in_methods()
-	});
-
-	appConfigStore.subscribe((config) => {
-		if (config.emailOneTimeAccessAsUnauthenticatedEnabled) {
-			alternativeSignInButton.href = '/login/alternative';
-			alternativeSignInButton.label = m.alternative_sign_in_methods();
-		} else {
-			alternativeSignInButton.href = '/login/alternative/code';
-			alternativeSignInButton.label = m.sign_in_with_login_code();
-		}
-
-		if (page.url.pathname != '/login') {
-			alternativeSignInButton.href = `${alternativeSignInButton.href}?redirect=${encodeURIComponent(page.url.pathname + page.url.search)}`;
-		}
 	});
 </script>
 
@@ -191,7 +180,7 @@
 		</div>
 	{/if}
 	<div
-		class="flex h-screen items-center justify-center bg-cover bg-center text-center"
+		class="flex min-h-dvh items-center justify-center bg-cover bg-center text-center"
 		style={!useDynamic && backgroundImageExists
 			? `background-image: url(${cachedBackgroundImage.getUrl()});`
 			: ''}
