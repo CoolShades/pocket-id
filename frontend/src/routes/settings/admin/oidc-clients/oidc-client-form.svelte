@@ -1,5 +1,6 @@
 <script lang="ts">
 	import FormInput from '$lib/components/form/form-input.svelte';
+	import FormattedMessage from '$lib/components/formatted-message.svelte';
 	import SwitchWithLabel from '$lib/components/form/switch-with-label.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tabs from '$lib/components/ui/tabs';
@@ -154,7 +155,9 @@
 				darkLogo = input;
 				darkLogoDataURL = URL.createObjectURL(input);
 			}
-			logoUrlInput && (logoUrlInput.value = '');
+			if (logoUrlInput) {
+				logoUrlInput.value = '';
+			}
 		}
 	}
 
@@ -162,11 +165,15 @@
 		if (light) {
 			logo = null;
 			logoDataURL = null;
-			$inputs.logoUrl && ($inputs.logoUrl.value = '');
+			if ($inputs.logoUrl) {
+				$inputs.logoUrl.value = '';
+			}
 		} else {
 			darkLogo = null;
 			darkLogoDataURL = null;
-			$inputs.darkLogoUrl && ($inputs.darkLogoUrl.value = '');
+			if ($inputs.darkLogoUrl) {
+				$inputs.darkLogoUrl.value = '';
+			}
 		}
 	}
 
@@ -179,6 +186,14 @@
 			});
 	}
 </script>
+
+{#snippet callbackUrlDescription()}
+	<FormattedMessage message={m.callback_url_description} />
+{/snippet}
+
+{#snippet logoutCallbackUrlDescription()}
+	<FormattedMessage message={m.logout_callback_url_description} />
+{/snippet}
 
 <form onsubmit={preventDefault(onSubmit)}>
 	<div class="grid grid-cols-1 gap-x-3 gap-y-7 sm:flex-row md:grid-cols-2">
@@ -203,29 +218,31 @@
 		/>
 		<OidcCallbackUrlInput
 			label={m.callback_urls()}
-			description={m.callback_url_description()}
+			description={callbackUrlDescription}
 			class="w-full"
 			bind:callbackURLs={$inputs.callbackURLs.value}
 			bind:error={$inputs.callbackURLs.error}
 		/>
 		<OidcCallbackUrlInput
 			label={m.logout_callback_urls()}
-			description={m.logout_callback_url_description()}
+			description={logoutCallbackUrlDescription}
 			class="w-full"
 			bind:callbackURLs={$inputs.logoutCallbackURLs.value}
 			bind:error={$inputs.logoutCallbackURLs.error}
 		/>
-		<SwitchWithLabel
-			id="public-client"
-			label={m.public_client()}
-			description={m.public_clients_description()}
-			onCheckedChange={(v) => {
-				if (v) {
-					$inputs.pkceEnabled.value = true;
-				}
-			}}
-			bind:checked={$inputs.isPublic.value}
-		/>
+		<div>
+			<SwitchWithLabel
+				id="public-client"
+				label={m.public_client()}
+				description={m.public_clients_description()}
+				onCheckedChange={(v) => {
+					if (v) {
+						$inputs.pkceEnabled.value = true;
+					}
+				}}
+				bind:checked={$inputs.isPublic.value}
+			/>
+		</div>
 		<div
 			class="rounded-lg transition-all duration-200"
 			class:[&_[data-switch-root]]:ring-2={pkcePromptNeeded}
@@ -315,7 +332,6 @@
 				/>
 			{/if}
 			<FederatedIdentitiesInput
-				client={existingClient}
 				bind:federatedIdentities={$inputs.credentials.value.federatedIdentities}
 				errors={getFederatedIdentityErrors($errors)}
 			/>

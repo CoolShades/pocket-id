@@ -50,9 +50,10 @@
 	async function onDisable() {
 		openConfirmDialog({
 			title: m.disable_scim_provisioning(),
-			message: m.disable_scim_provisioning_confirm_description({
-				clientName: existingProvider!.oidcClient.name
-			}),
+			message: {
+				message: m.disable_scim_provisioning_confirm_description,
+				inputs: { clientName: existingProvider!.oidcClient.name }
+			},
 			confirm: {
 				label: m.disable(),
 				destructive: true,
@@ -66,10 +67,9 @@
 	}
 
 	async function onSync() {
-		const hasChanges = Object.keys($inputs).some(
-			// @ts-ignore
-			(key) => $inputs[key].value !== (existingProvider as any)[key]
-		);
+		const hasChanges =
+			$inputs.endpoint.value !== existingProvider?.endpoint ||
+			($inputs.token?.value ?? '') !== (existingProvider?.token ?? '');
 
 		if (hasChanges) {
 			openConfirmDialog({

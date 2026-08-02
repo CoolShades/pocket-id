@@ -16,7 +16,7 @@
 		...restProps
 	}: HTMLAttributes<HTMLDivElement> & {
 		label: string;
-		description: string;
+		description: string | Snippet;
 		callbackURLs: string[];
 		error?: string | null;
 		children?: Snippet;
@@ -26,7 +26,7 @@
 <div {...restProps}>
 	<FormInput {label} {description}>
 		<div class="flex flex-col gap-y-2">
-			{#each callbackURLs as _, i}
+			{#each callbackURLs.keys() as i (i)}
 				<div class="flex gap-x-2">
 					<Input
 						aria-invalid={!!error}

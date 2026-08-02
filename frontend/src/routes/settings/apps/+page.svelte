@@ -28,9 +28,10 @@
 	async function revokeAuthorizedClient(client: OidcClientMetaData) {
 		openConfirmDialog({
 			title: m.revoke_access(),
-			message: m.revoke_access_description({
-				clientName: client.name
-			}),
+			message: {
+				message: m.revoke_access_description,
+				inputs: { clientName: client.name }
+			},
 			confirm: {
 				label: m.revoke(),
 				destructive: true,
@@ -80,7 +81,7 @@
 				class="grid gap-3"
 				style="grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));"
 			>
-				{#each clients.data as client}
+				{#each clients.data as client (client.id)}
 					<AuthorizedOidcClientCard {client} onRevoke={revokeAuthorizedClient} />
 				{/each}
 				<!-- Gap fix if two elements are present-->
