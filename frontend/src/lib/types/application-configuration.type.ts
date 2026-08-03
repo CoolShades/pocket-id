@@ -61,6 +61,8 @@ export type AllAppConfig = AppConfig & {
 	ldapAttributeGroupName: string;
 	ldapAdminGroupName: string;
 	ldapSoftDeleteUsers: boolean;
+	// OIDC
+	cimdUrlAllowlist: string[];
 };
 
 export type AppConfigRawResponse = {
