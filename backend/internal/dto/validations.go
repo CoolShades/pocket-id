@@ -2,11 +2,13 @@ package dto
 
 import (
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 
 	"github.com/gin-gonic/gin/binding"
@@ -23,6 +25,15 @@ var validateClientIDRegex = regexp.MustCompile("^[a-zA-Z0-9._-]+$")
 
 func init() {
 	engine := binding.Validator.Engine().(*validator.Validate)
+
+	// Use JSON tags to keep client-visible validation field names stable
+	engine.RegisterTagNameFunc(func(field reflect.StructField) string {
+		name := strings.SplitN(field.Tag.Get("json"), ",", 2)[0]
+		if name == "" || name == "-" {
+			return field.Name
+		}
+		return name
+	})
 
 	// Maximum allowed value for TTLs
 	const maxTTL = 31 * 24 * time.Hour
@@ -50,6 +61,9 @@ func init() {
 		},
 		"resource_uri": func(fl validator.FieldLevel) bool {
 			return ValidateResourceURI(fl.Field().String())
+		},
+		"token_duration": func(fl validator.FieldLevel) bool {
+			return model.IsValidTokenDurationMinutes(fl.Field().Int())
 		},
 	}
 	for k, v := range validators {
