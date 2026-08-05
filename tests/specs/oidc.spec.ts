@@ -5,6 +5,11 @@ import { generateIdToken } from '../utils/jwt.util';
 import * as oidcUtil from '../utils/oidc.util';
 import passkeyUtil from '../utils/passkey.util';
 
+const defaultTokenLifetimes = {
+	accessTokenDurationMinutes: 60,
+	refreshTokenDurationMinutes: 30 * 24 * 60
+};
+
 test.beforeEach(async () => await cleanupBackend());
 
 async function generateSeededOauthAccessToken(
@@ -30,6 +35,51 @@ test('Authorize existing client', async ({ page }) => {
 	await expectCallbackRedirect(page, oidcClient.callbackUrl, () =>
 		page.goto(`/authorize?${urlParams.toString()}`)
 	);
+});
+
+test('Authorize existing client with POST while signed in', async ({ page }, testInfo) => {
+	const oidcClient = oidcClients.nextcloud;
+	const formFields = Array.from(createUrlParams(oidcClient));
+	const authorizeURL = new URL('/authorize', testInfo.project.use.baseURL).toString();
+	const clientPageURL = new URL('/post-authorize-test', oidcClient.callbackUrl).toString();
+
+	await page.route(clientPageURL, async (route) => {
+		await route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html>' });
+	});
+	await page.goto(clientPageURL);
+
+	const authorizeRequestPromise = page.waitForRequest(
+		(request) => request.method() === 'POST' && new URL(request.url()).pathname === '/authorize'
+	);
+	await expectCallbackRedirect(page, oidcClient.callbackUrl, async () => {
+		// Create and submit a form with the OIDC parameters to simulate a POST request to the /authorize endpoint
+		await page.evaluate(
+			({ fields, target }) => {
+				const doc = (globalThis as any).document;
+				const form = doc.createElement('form');
+				form.method = 'POST';
+				form.action = target;
+
+				for (const [name, value] of fields) {
+					const input = doc.createElement('input');
+					input.type = 'hidden';
+					input.name = name;
+					input.value = value;
+					form.append(input);
+				}
+
+				doc.body.append(form);
+				form.submit();
+			},
+			{ fields: formFields, target: authorizeURL }
+		);
+
+		// Since the access token isn't sent with the POST request because of SameSite cookie restrictions,
+		// /authorize thinks the user is not signed in and shows the login page.
+		// The interaction page has the access token so the user just needs to click "Sign in" to continue the flow.
+		await page.getByRole('button', { name: 'Sign in' }).click();
+	});
+	await authorizeRequestPromise;
 });
 
 test('Authorize existing client while not signed in', async ({ page }) => {
@@ -128,7 +178,7 @@ test('Authorize new client while not signed in', async ({ page }) => {
 	);
 });
 
-test('Authorize new client fails with user group not allowed', async ({ page }) => {
+test('Authorize new client shows Pocket ID error when user group not allowed', async ({ page }) => {
 	const oidcClient = oidcClients.immich;
 	const urlParams = createUrlParams(oidcClient);
 
@@ -140,15 +190,12 @@ test('Authorize new client fails with user group not allowed', async ({ page }) 
 
 	await expectScopes(page, ['Email', 'Profile']);
 
-	const callbackUrl = await expectCallbackRedirect(page, oidcClient.callbackUrl, () =>
-		page.getByRole('button', { name: 'Sign in' }).click()
-	);
+	await page.getByRole('button', { name: 'Sign in' }).click();
 
-	expect(callbackUrl.searchParams.get('error')).toBe('access_denied');
-	expect(callbackUrl.searchParams.get('error_description')).toContain(
-		'You are not allowed to access this service.'
-	);
-	expect(callbackUrl.searchParams.get('state')).toBe(urlParams.get('state'));
+	await expect(page).toHaveURL(/\/interaction\/error\?error=/);
+	await expect(
+		page.getByRole('paragraph').filter({ hasText: 'You are not allowed to access this service.' })
+	).toBeVisible();
 });
 
 function createUrlParams(oidcClient: { id: string; callbackUrl: string }) {
@@ -718,6 +765,7 @@ test('Device authorization flow forces reauthentication when client requires it'
 	const client = oidcClients.nextcloud;
 	await request.put(`/api/oidc/clients/${client.id}`, {
 		data: {
+			...defaultTokenLifetimes,
 			name: client.name,
 			callbackURLs: [client.callbackUrl],
 			logoutCallbackURLs: [client.logoutCallbackUrl],
@@ -761,7 +809,7 @@ test('Authorize client with device authorization flow with invalid code', async 
 	await page.goto('/device?user_code=invalid-code');
 
 	await expect(
-		page.getByRole('paragraph').filter({ hasText: 'Invalid device code.' })
+		page.getByRole('paragraph').filter({ hasText: 'Device code is invalid. Please try again.' })
 	).toBeVisible();
 });
 
@@ -843,6 +891,7 @@ test('Forces reauthentication when client requires it', async ({ page, request }
 
 	await request.put(`/api/oidc/clients/${oidcClients.nextcloud.id}`, {
 		data: {
+			...defaultTokenLifetimes,
 			name: oidcClients.nextcloud.name,
 			callbackURLs: [oidcClients.nextcloud.callbackUrl],
 			logoutCallbackURLs: [oidcClients.nextcloud.logoutCallbackUrl],
@@ -1101,7 +1150,7 @@ test.describe('OIDC prompt parameter', () => {
 		await expect(selectionCard).toContainText('Tim Cook');
 
 		await expectCallbackRedirect(page, oidcClient.callbackUrl, () =>
-			page.getByRole('button', { name: 'Sign In' }).click()
+			page.getByRole('button', { name: /sign in/i }).click()
 		);
 	});
 
@@ -1396,6 +1445,7 @@ test.describe('Pushed Authorization Requests (PAR)', () => {
 		await page.request.put(`/api/oidc/clients/${client.id}`, {
 			headers: { 'Content-Type': 'application/json' },
 			data: {
+				...defaultTokenLifetimes,
 				name: client.name,
 				callbackURLs: [client.callbackUrl],
 				logoutCallbackURLs: [],
@@ -1439,6 +1489,7 @@ test.describe('Pushed Authorization Requests (PAR)', () => {
 		await request.put(`/api/oidc/clients/${client.id}`, {
 			headers: { 'Content-Type': 'application/json' },
 			data: {
+				...defaultTokenLifetimes,
 				name: client.name,
 				callbackURLs: [client.callbackUrl],
 				logoutCallbackURLs: [],
@@ -1472,7 +1523,8 @@ test.describe('Pushed Authorization Requests (PAR)', () => {
 			await parToggle.click();
 		}
 
-		await page.getByRole('button', { name: /save/i }).click();
+		await page.getByRole('button', { name: 'Save', exact: true }).first().click();
+		await expect(page.getByText('OIDC client updated successfully', { exact: true })).toBeVisible();
 		await page.reload();
 
 		await page.getByRole('button', { name: 'Show Advanced Options' }).click();
@@ -1521,7 +1573,8 @@ test.describe('OIDC skip consent', () => {
 		// Disabling it and saving must persist across a reload
 		await toggle.click();
 		await expect(toggle).not.toBeChecked();
-		await page.getByRole('button', { name: /save/i }).click();
+		const clientForm = toggle.locator('xpath=ancestor::form');
+		await clientForm.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('OIDC client updated successfully', { exact: true })).toBeVisible();
 		await page.reload();
 
