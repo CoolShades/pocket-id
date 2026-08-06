@@ -9,7 +9,11 @@
 	import { axiosErrorToast } from '$lib/utils/error-util';
 	import { LucideInfo } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
+<<<<<<< HEAD
 	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
+=======
+	import AppConfigDynamicClientsForm from './forms/app-config-dynamic-clients-form.svelte';
+>>>>>>> main
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
 	import AppConfigGeneralForm from './forms/app-config-general-form.svelte';
 	import AppConfigLdapForm from './forms/app-config-ldap-form.svelte';
@@ -111,6 +115,9 @@
 			<Tabs.Trigger value="ldap">
 				{m.ldap()}
 			</Tabs.Trigger>
+			<Tabs.Trigger value="oidc">
+				{m.oidc()}
+			</Tabs.Trigger>
 			<Tabs.Trigger value="images">
 				{m.images()}
 			</Tabs.Trigger>
@@ -167,6 +174,18 @@
 			</Card.Header>
 			<Card.Content>
 				<AppConfigLdapForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="oidc" id="application-configuration-oidc">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.client_id_metadata_documents()}</Card.Title>
+				<Card.Description>{m.client_id_metadata_documents_description()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigDynamicClientsForm {appConfig} callback={updateAppConfig} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>

@@ -13,6 +13,7 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/devicelogin"
 	"github.com/pocket-id/pocket-id/backend/internal/email"
 	"github.com/pocket-id/pocket-id/backend/internal/emailverification"
+	"github.com/pocket-id/pocket-id/backend/internal/geolite"
 	"github.com/pocket-id/pocket-id/backend/internal/job"
 	"github.com/pocket-id/pocket-id/backend/internal/oidc"
 	"github.com/pocket-id/pocket-id/backend/internal/onetimeaccess"
@@ -27,7 +28,7 @@ type services struct {
 	appConfigService   *appconfig.AppConfigService
 	appImagesService   *service.AppImagesService
 	emailModule        *email.Module
-	geoLiteService     *service.GeoLiteService
+	geoLiteModule      *geolite.Module
 	auditLogService    *service.AuditLogService
 	jwtService         *service.JwtService
 	scimService        *service.ScimService
@@ -79,8 +80,17 @@ func initServices(
 		return nil, fmt.Errorf("failed to create email module: %w", err)
 	}
 
-	svc.geoLiteService = service.NewGeoLiteService(httpClient)
-	svc.auditLogService = service.NewAuditLogService(db, svc.emailModule, svc.geoLiteService, svc.appConfigService)
+	svc.geoLiteModule, err = geolite.New(ctx, geolite.Dependencies{
+		HTTPClient:  httpClient,
+		DBPath:      common.EnvConfig.GeoLiteDBPath,
+		DownloadURL: common.EnvConfig.GeoLiteDBUrl,
+		LicenseKey:  common.EnvConfig.MaxMindLicenseKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GeoLite module: %w", err)
+	}
+
+	svc.auditLogService = service.NewAuditLogService(db, svc.emailModule, svc.geoLiteModule, svc.appConfigService)
 	svc.jwtService, err = service.NewJwtService(ctx, db, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT service: %w", err)
@@ -104,7 +114,7 @@ func initServices(
 		Signer:    svc.jwtService,
 		Reauth:    svc.webauthnModule,
 		AuditLog:  svc.auditLogService,
-		IPLocator: svc.geoLiteService,
+		IPLocator: svc.geoLiteModule,
 		AppConfig: svc.appConfigService,
 	})
 	if err != nil {
@@ -116,8 +126,9 @@ func initServices(
 	svc.apiModule = api.New(api.Dependencies{DB: db, Issuer: common.EnvConfig.AppURL})
 
 	svc.oidcModule, err = oidc.New(ctx, oidc.Dependencies{
-		DB:         db,
-		HTTPClient: httpClient,
+		DB:                  db,
+		HTTPClient:          httpClient,
+		GetCIMDURLAllowlist: svc.appConfigService.GetCIMDURLAllowlist,
 		Config: oidc.Config{
 			BaseURL:                   common.EnvConfig.AppURL,
 			TokenBaseURL:              common.EnvConfig.AppURL,
@@ -134,7 +145,7 @@ func initServices(
 		return nil, fmt.Errorf("failed to create OIDC module: %w", err)
 	}
 
-	svc.oidcService, err = service.NewOidcService(db, svc.jwtService, svc.oidcModule.Preview, svc.scimService, httpClient, fileStorage)
+	svc.oidcService, err = service.NewOidcService(db, svc.jwtService, svc.oidcModule.Preview, svc.oidcModule, svc.scimService, httpClient, fileStorage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OIDC service: %w", err)
 	}
