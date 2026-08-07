@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
+	fositeoauth2 "github.com/ory/fosite/handler/oauth2"
 	fositejwt "github.com/ory/fosite/token/jwt"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -51,17 +52,18 @@ func TestTokenHandlerClientCredentialsGrant(t *testing.T) {
 	hashed, err := bcrypt.GenerateFromPassword([]byte(clientPlain), bcrypt.DefaultCost)
 	require.NoError(t, err)
 	require.NoError(t, db.Create(&model.OidcClient{
-		Base:     model.Base{ID: clientID},
-		Name:     "Client Credentials Client",
-		Secret:   string(hashed),
-		IsPublic: false,
+		Base:                       model.Base{ID: clientID},
+		Name:                       "Client Credentials Client",
+		Secret:                     string(hashed),
+		IsPublic:                   false,
+		AccessTokenDurationMinutes: 2 * 60,
 	}).Error)
 
 	provider, err := newProvider(NewStore(db, nil), nil, testTokenSigner{key: key}, Config{
 		BaseURL:      baseURL,
 		TokenBaseURL: baseURL,
 		Secret:       []byte(secret),
-	})
+	}, nil)
 	require.NoError(t, err)
 	handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), nil)
 
@@ -79,9 +81,16 @@ func TestTokenHandlerClientCredentialsGrant(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.NotEmpty(t, body["access_token"], "client_credentials must issue a token, got error: %v", body["error"])
 
-	claims := decodeJWTPart(t, body["access_token"].(string), 1)
+	accessToken := body["access_token"].(string)
+	header := decodeJWTPart(t, accessToken, 0)
+	claims := decodeJWTPart(t, accessToken, 1)
 	// With no resource requested, the client_credentials token is a plain token bound to the requesting client
+	require.Equal(t, fositeoauth2.RFC9068JWTType, header["typ"])
 	require.Contains(t, jwtAudience(claims), clientID, "access token must be audience-bound to the client")
+	require.Equal(t, "client-"+clientID, claims["sub"])
+	require.Equal(t, clientID, claims["client_id"])
+	require.InDelta(t, 2*time.Hour/time.Second, body["expires_in"], 1)
+	require.InDelta(t, 2*time.Hour/time.Second, claims["exp"].(float64)-claims["iat"].(float64), 1)
 }
 
 // TestTokenHandlerClientCredentialsDropsIdentityScopes guards that a machine token never
@@ -115,7 +124,7 @@ func TestTokenHandlerClientCredentialsDropsIdentityScopes(t *testing.T) {
 		BaseURL:      baseURL,
 		TokenBaseURL: baseURL,
 		Secret:       []byte(secret),
-	})
+	}, nil)
 	require.NoError(t, err)
 	handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), nil)
 
@@ -177,7 +186,7 @@ func TestTokenHandlerClientCredentialsUsesClientSubjectGrants(t *testing.T) {
 		BaseURL:      baseURL,
 		TokenBaseURL: baseURL,
 		Secret:       []byte(secret),
-	})
+	}, nil)
 	require.NoError(t, err)
 	handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), apiAccess)
 
@@ -250,7 +259,7 @@ func TestTokenHandlerClientCredentialsDefaultsResourceScopes(t *testing.T) {
 		BaseURL:      baseURL,
 		TokenBaseURL: baseURL,
 		Secret:       []byte(secret),
-	})
+	}, nil)
 	require.NoError(t, err)
 	handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), apiAccess)
 
@@ -405,7 +414,7 @@ func TestTokenHandlerRefreshGrantRevalidatesUser(t *testing.T) {
 			BaseURL:      baseURL,
 			TokenBaseURL: baseURL,
 			Secret:       []byte(secret),
-		})
+		}, nil)
 		require.NoError(t, err)
 		handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), nil)
 
@@ -444,6 +453,46 @@ func TestTokenHandlerRefreshGrantRevalidatesUser(t *testing.T) {
 		require.NotEmpty(t, body["access_token"], "expected a new access token, got error: %v", body["error"])
 		require.NotEmpty(t, body["refresh_token"])
 		require.NotEqual(t, token, body["refresh_token"], "refresh token must be rotated")
+	})
+
+	t.Run("rotation applies the current client lifetimes", func(t *testing.T) {
+		db := testutils.NewDatabaseForTest(t)
+		const clientID, userID = "client-custom-lifetimes", "user-custom-lifetimes"
+		const accessDuration = 2 * time.Hour
+		const refreshDuration = 7 * 24 * time.Hour
+		createClient(t, db, model.OidcClient{Base: model.Base{ID: clientID}, Name: "Client", IsPublic: true})
+		require.NoError(t, db.Create(&model.User{Base: model.Base{ID: userID}, Username: "tim"}).Error)
+
+		token := mintRefreshToken(t, db, clientID, userID)
+		globalSecret, err := DeriveGlobalSecret([]byte(secret))
+		require.NoError(t, err)
+		strategy := compose.NewOAuth2HMACStrategy(&fosite.Config{GlobalSecret: globalSecret})
+		existingSignature := strategy.RefreshTokenSignature(t.Context(), token)
+		var existingBeforeUpdate OAuth2Session
+		require.NoError(t, db.First(&existingBeforeUpdate, "kind = ? AND key = ?", sessionKindRefreshToken, existingSignature).Error)
+		require.NotNil(t, existingBeforeUpdate.ExpiresAt)
+
+		require.NoError(t, db.Model(&model.OidcClient{}).Where("id = ?", clientID).Updates(map[string]any{
+			"access_token_duration_minutes":  int64(accessDuration / time.Minute),
+			"refresh_token_duration_minutes": int64(refreshDuration / time.Minute),
+		}).Error)
+		var existingAfterUpdate OAuth2Session
+		require.NoError(t, db.First(&existingAfterUpdate, "kind = ? AND key = ?", sessionKindRefreshToken, existingSignature).Error)
+		require.Equal(t, existingBeforeUpdate.ExpiresAt, existingAfterUpdate.ExpiresAt)
+
+		rotationStartedAt := time.Now().UTC()
+		body := doRefresh(t, db, clientID, token)
+
+		require.NotEmpty(t, body["access_token"], "expected a new access token, got error: %v", body["error"])
+		require.InDelta(t, accessDuration/time.Second, body["expires_in"], 1)
+		claims := decodeJWTPart(t, body["access_token"].(string), 1)
+		require.InDelta(t, accessDuration/time.Second, claims["exp"].(float64)-claims["iat"].(float64), 1)
+
+		rotatedSignature := strategy.RefreshTokenSignature(t.Context(), body["refresh_token"].(string))
+		var stored OAuth2Session
+		require.NoError(t, db.First(&stored, "kind = ? AND key = ?", sessionKindRefreshToken, rotatedSignature).Error)
+		require.NotNil(t, stored.ExpiresAt)
+		require.WithinDuration(t, rotationStartedAt.Add(refreshDuration), time.Time(*stored.ExpiresAt), 2*time.Second)
 	})
 
 	t.Run("disabled user is rejected on refresh", func(t *testing.T) {
@@ -549,7 +598,7 @@ func TestTokenHandlerRefreshGrantPreservesAudienceAndScope(t *testing.T) {
 			BaseURL:      baseURL,
 			TokenBaseURL: baseURL,
 			Secret:       []byte(secret),
-		})
+		}, nil)
 		require.NoError(t, err)
 		handler := newTokenHandler(provider, newClaimsService(db, nil, baseURL, nil), apiAccess)
 
@@ -599,6 +648,7 @@ func TestTokenHandlerRefreshGrantPreservesAudienceAndScope(t *testing.T) {
 		claims := decodeJWTPart(t, body["access_token"].(string), 1)
 		// The refreshed access token stays bound to the original API audience and re-adds the issuer so it keeps working at userinfo, never widening to any other API
 		require.ElementsMatch(t, []string{apiResource, baseURL}, jwtAudience(claims))
+		require.Equal(t, clientID, claims["client_id"])
 		// A token that requested openid alongside the API keeps the identity scope on the access token, matching what it was granted
 		require.Equal(t, []string{"openid", "read:orders"}, jwtScopes(claims))
 	})
