@@ -9,10 +9,15 @@
 	import { axiosErrorToast } from '$lib/utils/error-util';
 	import { LucideInfo } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
+<<<<<<< HEAD
 	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
+=======
+	import AppConfigDynamicClientsForm from './forms/app-config-dynamic-clients-form.svelte';
+>>>>>>> main
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
 	import AppConfigGeneralForm from './forms/app-config-general-form.svelte';
 	import AppConfigLdapForm from './forms/app-config-ldap-form.svelte';
+	import AppConfigPasskeysForm from './forms/app-config-passkeys-form.svelte';
 	import AppConfigSignupDefaultsForm from './forms/app-config-signup-defaults-form.svelte';
 	import UpdateApplicationImages from './update-application-images.svelte';
 
@@ -105,14 +110,17 @@
 			<Tabs.Trigger value="user-creation">
 				{m.user_creation()}
 			</Tabs.Trigger>
+			<Tabs.Trigger value="passkeys">
+				{m.passkeys()}
+			</Tabs.Trigger>
 			<Tabs.Trigger value="email">
 				{m.email()}
 			</Tabs.Trigger>
 			<Tabs.Trigger value="ldap">
 				{m.ldap()}
 			</Tabs.Trigger>
-			<Tabs.Trigger value="images">
-				{m.images()}
+			<Tabs.Trigger value="oidc">
+				{m.oidc()}
 			</Tabs.Trigger>
 			<Tabs.Trigger value="dynamic-background">
 				{m.dynamic_background()}
@@ -120,7 +128,7 @@
 		</Tabs.List>
 	</div>
 
-	<Tabs.Content value="general" id="application-configuration-general">
+	<Tabs.Content value="general" id="application-configuration-general" class="flex flex-col gap-4">
 		<Card.Root>
 			<Card.Header>
 				<Card.Title>{m.general()}</Card.Title>
@@ -129,6 +137,16 @@
 				{#key appConfig.accentColor}
 					<AppConfigGeneralForm {appConfig} callback={updateAppConfig} />
 				{/key}
+			</Card.Content>
+		</Card.Root>
+
+		<Card.Root id="application-configuration-images">
+			<Card.Header>
+				<Card.Title>{m.images()}</Card.Title>
+				<Card.Description>{m.configure_application_images()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<UpdateApplicationImages callback={updateImages} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>
@@ -141,6 +159,18 @@
 			</Card.Header>
 			<Card.Content>
 				<AppConfigSignupDefaultsForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="passkeys" id="application-configuration-passkeys">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.passkeys()}</Card.Title>
+				<Card.Description>{m.configure_passkey_settings()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigPasskeysForm {appConfig} callback={updateAppConfig} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>
@@ -171,14 +201,14 @@
 		</Card.Root>
 	</Tabs.Content>
 
-	<Tabs.Content value="images" id="application-configuration-images">
+	<Tabs.Content value="oidc" id="application-configuration-oidc">
 		<Card.Root>
 			<Card.Header>
-				<Card.Title>{m.images()}</Card.Title>
-				<Card.Description>{m.configure_application_images()}</Card.Description>
+				<Card.Title>{m.client_id_metadata_documents()}</Card.Title>
+				<Card.Description>{m.client_id_metadata_documents_description()}</Card.Description>
 			</Card.Header>
 			<Card.Content>
-				<UpdateApplicationImages callback={updateImages} />
+				<AppConfigDynamicClientsForm {appConfig} callback={updateAppConfig} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>

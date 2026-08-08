@@ -18,7 +18,6 @@
 	import { LucideChevronDown, LucideMoon, LucideSun } from '@lucide/svelte';
 	import { slide } from 'svelte/transition';
 	import { z } from 'zod/v4';
-	import FederatedIdentitiesInput from './federated-identities-input.svelte';
 	import OidcCallbackUrlInput from './oidc-callback-url-input.svelte';
 	import OidcClientImageInput from './oidc-client-image-input.svelte';
 
@@ -41,6 +40,7 @@
 	let darkLogoDataURL: string | null = $state(
 		existingClient?.hasDarkLogo ? cachedOidcClientLogo.getUrl(existingClient!.id, false) : null
 	);
+	const isCIMDClient = $derived(existingClient?.clientType === 'cimd');
 
 	const client = {
 		id: '',
@@ -55,12 +55,11 @@
 			existingClient?.requiresPushedAuthorizationRequests || false,
 		skipConsent: existingClient?.skipConsent || false,
 		launchURL: existingClient?.launchURL || '',
-		credentials: {
-			federatedIdentities: existingClient?.credentials?.federatedIdentities || []
-		},
 		logoUrl: '',
 		darkLogoUrl: '',
-		pkceSupported: existingClient?.pkceSupported || false
+		pkceSupported: existingClient?.pkceSupported || false,
+		accessTokenDurationMinutes: existingClient?.accessTokenDurationMinutes ?? 60,
+		refreshTokenDurationMinutes: existingClient?.refreshTokenDurationMinutes ?? 30 * 24 * 60
 	};
 
 	const formSchema = z.object({
@@ -86,21 +85,20 @@
 		launchURL: optionalUrl,
 		logoUrl: optionalUrl,
 		darkLogoUrl: optionalUrl,
-		credentials: z.object({
-			federatedIdentities: z.array(
-				z.object({
-					issuer: z.url(),
-					subject: z.string().optional(),
-					audience: z.string().optional(),
-					jwks: z.url().optional().or(z.literal('')),
-					replayProtection: z.boolean().default(true)
-				})
-			)
-		})
+		accessTokenDurationMinutes: z
+			.number()
+			.min(1)
+			.max(365 * 24 * 60)
+			.int(),
+		refreshTokenDurationMinutes: z
+			.number()
+			.min(1)
+			.max(365 * 24 * 60)
+			.int()
 	});
 
 	type FormSchema = typeof formSchema;
-	const { inputs, errors, ...form } = createForm<FormSchema>(formSchema, client);
+	const { inputs, ...form } = createForm<FormSchema>(formSchema, client);
 
 	const pkcePromptNeeded = $derived(!$inputs.pkceEnabled.value && client.pkceSupported);
 
@@ -111,6 +109,7 @@
 
 		const success = await callback({
 			...data,
+			credentials: existingClient?.credentials ?? { federatedIdentities: [] },
 			logo: $inputs.logoUrl?.value ? undefined : logo,
 			logoUrl: $inputs.logoUrl?.value,
 			darkLogo: $inputs.darkLogoUrl?.value ? undefined : darkLogo,
@@ -176,15 +175,6 @@
 			}
 		}
 	}
-
-	function getFederatedIdentityErrors(errors: z.ZodError<any> | undefined) {
-		return errors?.issues
-			.filter((e) => e.path[0] == 'credentials' && e.path[1] == 'federatedIdentities')
-			.map((e) => {
-				e.path.splice(0, 2);
-				return e;
-			});
-	}
 </script>
 
 {#snippet callbackUrlDescription()}
@@ -202,6 +192,7 @@
 			class="w-full"
 			description={m.client_name_description()}
 			bind:input={$inputs.name}
+			disabled={isCIMDClient}
 		/>
 		<FormInput
 			label={m.client_description()}
@@ -222,6 +213,7 @@
 			class="w-full"
 			bind:callbackURLs={$inputs.callbackURLs.value}
 			bind:error={$inputs.callbackURLs.error}
+			disabled={isCIMDClient}
 		/>
 		<OidcCallbackUrlInput
 			label={m.logout_callback_urls()}
@@ -229,6 +221,7 @@
 			class="w-full"
 			bind:callbackURLs={$inputs.logoutCallbackURLs.value}
 			bind:error={$inputs.logoutCallbackURLs.error}
+			disabled={isCIMDClient}
 		/>
 		<div>
 			<SwitchWithLabel
@@ -241,6 +234,7 @@
 					}
 				}}
 				bind:checked={$inputs.isPublic.value}
+				disabled={isCIMDClient}
 			/>
 		</div>
 		<div
@@ -252,7 +246,7 @@
 				id="pkce"
 				label={m.pkce()}
 				description={m.proof_key_code_exchange_is_a_security_feature_to_prevent_csrf_and_authorization_code_interception_attacks()}
-				disabled={$inputs.isPublic.value}
+				disabled={isCIMDClient || $inputs.isPublic.value}
 				bind:checked={$inputs.pkceEnabled.value}
 			/>
 		</div>
@@ -331,10 +325,6 @@
 					bind:input={$inputs.id}
 				/>
 			{/if}
-			<FederatedIdentitiesInput
-				bind:federatedIdentities={$inputs.credentials.value.federatedIdentities}
-				errors={getFederatedIdentityErrors($errors)}
-			/>
 		</div>
 	{/if}
 

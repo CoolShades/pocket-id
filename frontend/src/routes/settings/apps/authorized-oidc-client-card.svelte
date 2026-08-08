@@ -9,6 +9,7 @@
 	import userStore from '$lib/stores/user-store';
 	import type { AccessibleOidcClient, OidcClientMetaData } from '$lib/types/oidc.type';
 	import { cachedApplicationLogo, cachedOidcClientLogo } from '$lib/utils/cached-image-util';
+	import { encodeClientIdParam } from '$lib/utils/client-id-util';
 	import {
 		LucideBan,
 		LucideEllipsisVertical,
@@ -79,7 +80,8 @@
 							<DropdownMenu.Content align="end">
 								{#if $userStore?.isAdmin}
 									<DropdownMenu.Item
-										onclick={() => goto(`/settings/admin/oidc-clients/${client.id}`)}
+										onclick={() =>
+											goto(`/settings/admin/oidc-clients/${encodeClientIdParam(client.id)}`)}
 										><LucidePencil class="mr-2 size-4" /> {m.edit()}</DropdownMenu.Item
 									>
 								{/if}
@@ -102,8 +104,8 @@
 				<Tooltip.Provider>
 					<Tooltip.Root>
 						<Tooltip.Trigger>
-							<p class="text-muted-foreground flex items-center text-xs">
-								<LucideLogIn class="mr-1 size-3" />
+							<p class="text-muted-foreground flex items-center text-xs text-start">
+								<LucideLogIn class="mr-2 size-3" />
 								{formatDistanceToNow(client.lastUsedAt, { addSuffix: true })}
 							</p>
 						</Tooltip.Trigger>

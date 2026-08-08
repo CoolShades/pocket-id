@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
@@ -199,14 +200,13 @@ func TestService_UpdateAppConfig(t *testing.T) {
 		assert.Equal(t, getDefaultConfig().SmtpTls, cfg.SmtpTls)
 	})
 
-	t.Run("returns UiConfigDisabledError when the UI config is disabled", func(t *testing.T) {
+	t.Run("returns a UI-config-disabled error when the UI config is disabled", func(t *testing.T) {
 		setUIConfigDisabled(t, true)
 		svc := NewTestAppConfigService(nil)
 
 		_, err := svc.UpdateAppConfig(t.Context(), dto.AppConfigUpdateDto{AppName: "X"})
 		require.Error(t, err)
-		var target *common.UiConfigDisabledError
-		assert.ErrorAs(t, err, &target)
+		assert.True(t, apperror.IsCode(err, apperror.CodeUIConfigDisabled))
 	})
 }
 
@@ -269,15 +269,14 @@ func TestService_UpdateAppConfigValues(t *testing.T) {
 		assert.Equal(t, *getDefaultConfig(), *cfg)
 	})
 
-	t.Run("returns UiConfigDisabledError when the UI config is disabled", func(t *testing.T) {
+	t.Run("returns a UI-config-disabled error when the UI config is disabled", func(t *testing.T) {
 		setUIConfigDisabled(t, true)
 		svc := NewTestAppConfigService(nil)
 
 		// An even number of arguments so the count check passes and we reach the UI-config check
 		err := svc.UpdateAppConfigValues(t.Context(), "appName", "X")
 		require.Error(t, err)
-		var target *common.UiConfigDisabledError
-		assert.ErrorAs(t, err, &target)
+		assert.True(t, apperror.IsCode(err, apperror.CodeUIConfigDisabled))
 	})
 }
 
@@ -340,5 +339,55 @@ func TestService_ListAppConfig(t *testing.T) {
 		got, ok := findConfigValue(vars, "smtpPassword")
 		require.True(t, ok)
 		assert.Equal(t, "XXXXXXXXXX", got)
+	})
+}
+
+func TestService_CIMDURLAllowlist(t *testing.T) {
+	t.Run("defaults to empty", func(t *testing.T) {
+		setUIConfigDisabled(t, false)
+		db := testutils.NewDatabaseForTest(t)
+		svc := newActorBackedService(t, db)
+
+		assert.Empty(t, svc.GetCIMDURLAllowlist())
+	})
+
+	t.Run("round-trips a valid allowlist", func(t *testing.T) {
+		setUIConfigDisabled(t, false)
+		db := testutils.NewDatabaseForTest(t)
+		svc := newActorBackedService(t, db)
+
+		_, err := svc.UpdateAppConfig(t.Context(), dto.AppConfigUpdateDto{
+			AppName:          "App",
+			SessionDuration:  "60",
+			CIMDURLAllowlist: `["https://app.example.com/**","https://*.trusted.com/oauth"]`,
+		})
+		require.NoError(t, err)
+
+		assert.Equal(t,
+			[]string{"https://app.example.com/**", "https://*.trusted.com/oauth"},
+			svc.GetCIMDURLAllowlist(),
+		)
+	})
+
+	t.Run("rejects an invalid pattern", func(t *testing.T) {
+		setUIConfigDisabled(t, false)
+		db := testutils.NewDatabaseForTest(t)
+		svc := newActorBackedService(t, db)
+
+		_, err := svc.UpdateAppConfig(t.Context(), dto.AppConfigUpdateDto{
+			AppName:          "App",
+			SessionDuration:  "60",
+			CIMDURLAllowlist: `["javascript:alert(1)"]`,
+		})
+		require.Error(t, err)
+	})
+
+	t.Run("returns empty on malformed value", func(t *testing.T) {
+		setUIConfigDisabled(t, false)
+		db := testutils.NewDatabaseForTest(t)
+		svc := newActorBackedService(t, db)
+
+		require.NoError(t, svc.UpdateAppConfigValues(t.Context(), "cimdUrlAllowlist", "not-json"))
+		assert.Empty(t, svc.GetCIMDURLAllowlist())
 	})
 }
