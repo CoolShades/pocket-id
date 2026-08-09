@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 )
 
@@ -27,11 +28,7 @@ type AuditLogger interface {
 }
 
 type IPLocationResolver interface {
-	GetLocationByIP(ipAddress string) (country, city string, err error)
-}
-
-type AppConfigProvider interface {
-	GetConfig(ctx context.Context) (*appconfig.AppConfigModel, error)
+	GetLocationByIP(ctx context.Context, ipAddress string) (country string, city string, err error)
 }
 
 type Dependencies struct {
@@ -43,7 +40,7 @@ type Dependencies struct {
 	Reauth    ReauthenticationTokenConsumer
 	AuditLog  AuditLogger
 	IPLocator IPLocationResolver
-	AppConfig AppConfigProvider
+	AppConfig appconfig.AppConfigResolver
 }
 
 type Module struct {
@@ -72,8 +69,8 @@ func New(deps Dependencies) (*Module, error) {
 
 // RegisterRoutes mounts the public exchange and authenticated verification endpoints
 func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, browserAuth, createRateLimit, exchangeRateLimit, verificationRateLimit gin.HandlerFunc) {
-	apiGroup.POST("/device-login/requests", createRateLimit, m.handler.createRequest)
-	apiGroup.POST("/device-login/requests/:id/exchange", exchangeRateLimit, m.handler.exchangeRequest)
-	apiGroup.POST("/device-login/verification", verificationRateLimit, browserAuth, m.handler.inspectRequest)
-	apiGroup.POST("/device-login/verification/decision", verificationRateLimit, browserAuth, m.handler.decideRequest)
+	apiGroup.POST("/device-login/requests", createRateLimit, httpserver.Handle(m.handler.createRequest))
+	apiGroup.POST("/device-login/requests/:id/exchange", exchangeRateLimit, httpserver.Handle(m.handler.exchangeRequest))
+	apiGroup.POST("/device-login/verification", verificationRateLimit, browserAuth, httpserver.Handle(m.handler.inspectRequest))
+	apiGroup.POST("/device-login/verification/decision", verificationRateLimit, browserAuth, httpserver.Handle(m.handler.decideRequest))
 }

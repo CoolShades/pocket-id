@@ -3,8 +3,104 @@ package dto
 import (
 	"testing"
 
+	"github.com/gin-gonic/gin/binding"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestTokenDurationValidation(t *testing.T) {
+	type input struct {
+		Duration int64 `binding:"omitempty,token_duration"`
+	}
+
+	for _, test := range []struct {
+		name    string
+		value   int64
+		wantErr bool
+	}{
+		{name: "omitted (default)"},
+		{name: "negative", value: -1, wantErr: true},
+		{name: "minimum", value: 1},
+		{name: "custom duration", value: 90},
+		{name: "maximum", value: 365 * 24 * 60},
+		{name: "above maximum", value: 365*24*60 + 1, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := binding.Validator.ValidateStruct(input{Duration: test.value})
+			if test.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestAppConfigJSONValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{
+			name:  "valid string array",
+			valid: validateJSONStringArray(`["group-id"]`),
+		},
+		{
+			name:  "valid custom claims",
+			valid: validateJSONCustomClaims(`[{"key":"role","value":"user"}]`),
+		},
+		{
+			name:  "valid CIMD URL allowlist",
+			valid: validateCIMDURLAllowlist(`["https://app.example.com/**"]`),
+		},
+		{
+			name:  "custom claims object instead of array",
+			valid: !validateJSONCustomClaims(`{"key":"role","value":"user"}`),
+		},
+		{
+			name:  "custom claim missing key",
+			valid: !validateJSONCustomClaims(`[{"value":"user"}]`),
+		},
+		{
+			name:  "non-string group ID",
+			valid: !validateJSONStringArray(`[42]`),
+		},
+		{
+			name:  "null array",
+			valid: !validateJSONCustomClaims(`null`),
+		},
+		{
+			name:  "unsafe CIMD pattern",
+			valid: !validateCIMDURLAllowlist(`["data:text/html,test"]`),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.True(t, test.valid)
+		})
+	}
+}
+
+func TestAppConfigValueTypeValidation(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		valid bool
+	}{
+		{name: "true boolean", valid: validateBooleanString("true")},
+		{name: "false boolean", valid: validateBooleanString("false")},
+		{name: "non-boolean word", valid: !validateBooleanString("hello")},
+		{name: "numeric boolean", valid: !validateBooleanString("1")},
+		{name: "integer", valid: validateIntegerString("60")},
+		{name: "negative integer", valid: validateIntegerString("-1")},
+		{name: "decimal", valid: !validateIntegerString("1.5")},
+		{name: "non-integer word", valid: !validateIntegerString("hello")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.True(t, test.valid)
+		})
+	}
+}
 
 func TestValidateUsername(t *testing.T) {
 	tests := []struct {
