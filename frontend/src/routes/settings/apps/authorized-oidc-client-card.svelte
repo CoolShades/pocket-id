@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import ImageBox from '$lib/components/image-box.svelte';
+	import Logo from '$lib/components/logo.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -8,7 +9,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import userStore from '$lib/stores/user-store';
 	import type { AccessibleOidcClient, OidcClientMetaData } from '$lib/types/oidc.type';
-	import { cachedApplicationLogo, cachedOidcClientLogo } from '$lib/utils/cached-image-util';
+	import { cachedOidcClientLogo } from '$lib/utils/cached-image-util';
+	import { encodeClientIdParam } from '$lib/utils/client-id-util';
 	import {
 		LucideBan,
 		LucideEllipsisVertical,
@@ -37,13 +39,17 @@
 	<Card.Content class=" p-0">
 		<div class="flex gap-3">
 			<div class="aspect-square h-[56px]">
-				<ImageBox
-					class="size-14"
-					src={client.hasLogo
-						? cachedOidcClientLogo.getUrl(client.id, isLightMode)
-						: cachedApplicationLogo.getUrl(isLightMode)}
-					alt={m.name_logo({ name: client.name })}
-				/>
+				{#if client.hasLogo}
+					<ImageBox
+						class="size-14"
+						src={cachedOidcClientLogo.getUrl(client.id, isLightMode)}
+						alt={m.name_logo({ name: client.name })}
+					/>
+				{:else}
+					<div class="bg-muted flex size-14 items-center justify-center rounded-2xl p-3">
+						<Logo class="size-full" alt={m.name_logo({ name: client.name })} animate={false} />
+					</div>
+				{/if}
 			</div>
 			<div class="flex w-full justify-between gap-3">
 				<div class="h-20">
@@ -79,7 +85,8 @@
 							<DropdownMenu.Content align="end">
 								{#if $userStore?.isAdmin}
 									<DropdownMenu.Item
-										onclick={() => goto(`/settings/admin/oidc-clients/${client.id}`)}
+										onclick={() =>
+											goto(`/settings/admin/oidc-clients/${encodeClientIdParam(client.id)}`)}
 										><LucidePencil class="mr-2 size-4" /> {m.edit()}</DropdownMenu.Item
 									>
 								{/if}
@@ -102,8 +109,8 @@
 				<Tooltip.Provider>
 					<Tooltip.Root>
 						<Tooltip.Trigger>
-							<p class="text-muted-foreground flex items-center text-xs">
-								<LucideLogIn class="mr-1 size-3" />
+							<p class="text-muted-foreground flex items-center text-xs text-start">
+								<LucideLogIn class="mr-2 size-3" />
 								{formatDistanceToNow(client.lastUsedAt, { addSuffix: true })}
 							</p>
 						</Tooltip.Trigger>

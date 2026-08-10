@@ -10,6 +10,7 @@ type OidcClientMetaDataDto struct {
 	HasDarkLogo              bool    `json:"hasDarkLogo"`
 	LaunchURL                *string `json:"launchURL"`
 	RequiresReauthentication bool    `json:"requiresReauthentication"`
+	ClientType               string  `json:"clientType"`
 }
 
 type OidcClientDto struct {
@@ -23,6 +24,8 @@ type OidcClientDto struct {
 	Credentials                         OidcClientCredentialsDto `json:"credentials"`
 	IsGroupRestricted                   bool                     `json:"isGroupRestricted"`
 	PkceSupported                       bool                     `json:"pkceSupported,omitempty"`
+	AccessTokenDurationMinutes          int64                    `json:"accessTokenDurationMinutes"`
+	RefreshTokenDurationMinutes         int64                    `json:"refreshTokenDurationMinutes"`
 }
 
 type OidcClientWithAllowedUserGroupsDto struct {
@@ -52,6 +55,8 @@ type OidcClientUpdateDto struct {
 	LogoURL                             *string                  `json:"logoUrl"`
 	DarkLogoURL                         *string                  `json:"darkLogoUrl"`
 	IsGroupRestricted                   bool                     `json:"isGroupRestricted"`
+	AccessTokenDurationMinutes          int64                    `json:"accessTokenDurationMinutes" binding:"omitempty,token_duration"`
+	RefreshTokenDurationMinutes         int64                    `json:"refreshTokenDurationMinutes" binding:"omitempty,token_duration"`
 }
 
 type OidcClientCreateDto struct {
