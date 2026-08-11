@@ -2,18 +2,24 @@ package appconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"reflect"
+<<<<<<< HEAD
 	"strconv"
 	"strings"
+=======
+>>>>>>> main
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/italypaleale/francis/actor"
 	"github.com/italypaleale/francis/host/local"
 	"gorm.io/gorm"
 
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/tracing"
@@ -95,11 +101,42 @@ func (s *AppConfigService) GetConfig(parentCtx context.Context) (*AppConfigModel
 	return &cfg, nil
 }
 
+// GetCIMDURLAllowlist returns the configured CIMD metadata-document URL
+// allowlist. Returns an empty slice if unset or malformed (which denies all).
+func (s *AppConfigService) GetCIMDURLAllowlist() []string {
+	cfg, err := s.GetConfig(context.Background())
+	if err != nil {
+		return nil
+	}
+	raw := string(cfg.CIMDURLAllowlist)
+	if raw == "" {
+		return nil
+	}
+	var patterns []string
+	if err := json.Unmarshal([]byte(raw), &patterns); err != nil {
+		return nil
+	}
+	return patterns
+}
+
 // UpdateAppConfig replaces the entire application configuration with the values from the input DTO.
 func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppConfigUpdateDto) ([]AppConfigVariable, error) {
 	// If the UI config is disabled, we cannot continue
 	if common.EnvConfig.UiConfigDisabled {
-		return nil, &common.UiConfigDisabledError{}
+		return nil, apperror.UIConfigDisabled()
+	}
+
+	// Validate the CIMD URL allowlist patterns, if provided
+	if input.CIMDURLAllowlist != "" {
+		var patterns []string
+		if err := json.Unmarshal([]byte(input.CIMDURLAllowlist), &patterns); err != nil {
+			return nil, apperror.InvalidCIMDURLPattern(input.CIMDURLAllowlist)
+		}
+		for _, p := range patterns {
+			if err := utils.ValidateCallbackURLPattern(p); err != nil {
+				return nil, apperror.InvalidCIMDURLPattern(p)
+			}
+		}
 	}
 
 	if err := validateDynamicBackground(input); err != nil {
@@ -127,7 +164,7 @@ func (s *AppConfigService) UpdateAppConfigValues(ctx context.Context, keysAndVal
 
 	// If the UI config is disabled, we cannot continue
 	if common.EnvConfig.UiConfigDisabled {
-		return &common.UiConfigDisabledError{}
+		return apperror.UIConfigDisabled()
 	}
 
 	// Collect the key-value pairs into a map for the actor
@@ -184,9 +221,10 @@ func (s *AppConfigService) loadDbConfigFromEnv() (*AppConfigModel, error) {
 	for i := range rt.NumField() {
 		field := rt.Field(i)
 
-		// Derive the environment variable name from the configuration's JSON key
-		key, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		envVarName := utils.CamelCaseToScreamingSnakeCase(key)
+		envVarName := field.Tag.Get("env")
+		if envVarName == "" {
+			return nil, fmt.Errorf("app configuration field %s is missing its environment variable name", field.Name)
+		}
 
 		// Set the value if it's set
 		value, ok := os.LookupEnv(envVarName)
@@ -211,9 +249,15 @@ func (s *AppConfigService) loadDbConfigFromEnv() (*AppConfigModel, error) {
 		}
 	}
 
+	// Validate the resolved configuration before exposing values to the rest of the application
+	if err := validateEnvConfig(dest); err != nil {
+		return nil, err
+	}
+
 	return dest, nil
 }
 
+<<<<<<< HEAD
 // validateDynamicBackground enforces numeric bounds on the dynamic background
 // parameters. The DTO's binding tags ensure values are numeric strings; this
 // function clamps them to safe ranges matching the frontend prototype so an
@@ -252,5 +296,36 @@ func validateDynamicBackground(input dto.AppConfigUpdateDto) error {
 			}
 		}
 	}
+=======
+// validateEnvConfig applies the HTTP configuration rules and reports failures using environment variable names
+func validateEnvConfig(config *AppConfigModel) error {
+	// Map the resolved model to the canonical update DTO so both configuration paths share validation rules
+	var input dto.AppConfigUpdateDto
+	if err := dto.MapStruct(config, &input); err != nil {
+		return fmt.Errorf("failed to prepare environment app configuration for validation: %w", err)
+	}
+
+	// Collect every invalid environment variable
+	err := input.Validate()
+	if err != nil {
+		validationErrors, ok := errors.AsType[validator.ValidationErrors](err)
+		if !ok {
+			return fmt.Errorf("failed to validate environment app configuration: %w", err)
+		}
+
+		failures := make([]error, 0, len(validationErrors))
+		for _, validationError := range validationErrors {
+			envName, ok := appConfigEnvName(validationError.Field())
+			if !ok {
+				return fmt.Errorf("failed to find the environment variable for app configuration field %s", validationError.Field())
+			}
+			_, message := dto.ValidationErrorDetails(validationError)
+			failures = append(failures, fmt.Errorf("%s %s", envName, message))
+		}
+
+		return fmt.Errorf("invalid environment app configuration: %w", errors.Join(failures...))
+	}
+
+>>>>>>> main
 	return nil
 }
