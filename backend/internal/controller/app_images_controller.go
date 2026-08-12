@@ -9,7 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
+	_ "github.com/pocket-id/pocket-id/backend/internal/dto"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
 	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
@@ -24,20 +26,21 @@ func NewAppImagesController(
 		appImagesService: appImagesService,
 	}
 
-	group.GET("/application-images/logo", controller.getLogoHandler)
-	group.GET("/application-images/email", controller.getEmailLogoHandler)
-	group.GET("/application-images/background", controller.getBackgroundImageHandler)
-	group.GET("/application-images/favicon", controller.getFaviconHandler)
-	group.GET("/application-images/default-profile-picture", authMiddleware.Add(), controller.getDefaultProfilePicture)
+	group.GET("/application-images/logo", httpserver.Handle(controller.getLogoHandler))
+	group.GET("/application-images/email", httpserver.Handle(controller.getEmailLogoHandler))
+	group.GET("/application-images/background", httpserver.Handle(controller.getBackgroundImageHandler))
+	group.GET("/application-images/favicon", httpserver.Handle(controller.getFaviconHandler))
+	group.GET("/application-images/default-profile-picture", authMiddleware.Add(), httpserver.Handle(controller.getDefaultProfilePicture))
 
-	group.PUT("/application-images/logo", authMiddleware.Add(), controller.updateLogoHandler)
-	group.PUT("/application-images/email", authMiddleware.Add(), controller.updateEmailLogoHandler)
-	group.PUT("/application-images/background", authMiddleware.Add(), controller.updateBackgroundImageHandler)
-	group.PUT("/application-images/favicon", authMiddleware.Add(), controller.updateFaviconHandler)
-	group.PUT("/application-images/default-profile-picture", authMiddleware.Add(), controller.updateDefaultProfilePicture)
+	group.PUT("/application-images/logo", authMiddleware.Add(), httpserver.Handle(controller.updateLogoHandler))
+	group.PUT("/application-images/email", authMiddleware.Add(), httpserver.Handle(controller.updateEmailLogoHandler))
+	group.PUT("/application-images/background", authMiddleware.Add(), httpserver.Handle(controller.updateBackgroundImageHandler))
+	group.PUT("/application-images/favicon", authMiddleware.Add(), httpserver.Handle(controller.updateFaviconHandler))
+	group.PUT("/application-images/default-profile-picture", authMiddleware.Add(), httpserver.Handle(controller.updateDefaultProfilePicture))
 
-	group.DELETE("/application-images/background", authMiddleware.Add(), controller.deleteBackgroundImageHandler)
-	group.DELETE("/application-images/default-profile-picture", authMiddleware.Add(), controller.deleteDefaultProfilePicture)
+	group.DELETE("/application-images/logo", authMiddleware.Add(), httpserver.Handle(controller.deleteLogoHandler))
+	group.DELETE("/application-images/background", authMiddleware.Add(), httpserver.Handle(controller.deleteBackgroundImageHandler))
+	group.DELETE("/application-images/default-profile-picture", authMiddleware.Add(), httpserver.Handle(controller.deleteDefaultProfilePicture))
 }
 
 type AppImagesController struct {
@@ -53,15 +56,10 @@ type AppImagesController struct {
 // @Produce image/jpeg
 // @Produce image/svg+xml
 // @Success 200 {file} binary "Logo image"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/logo [get]
-func (c *AppImagesController) getLogoHandler(ctx *gin.Context) {
-	lightLogo, _ := strconv.ParseBool(ctx.DefaultQuery("light", "true"))
-	imageName := "logoLight"
-	if !lightLogo {
-		imageName = "logoDark"
-	}
-
-	c.getImage(ctx, imageName)
+func (c *AppImagesController) getLogoHandler(ctx *gin.Context) error {
+	return c.getImage(ctx, logoImageName(ctx))
 }
 
 // getEmailLogoHandler godoc
@@ -71,9 +69,10 @@ func (c *AppImagesController) getLogoHandler(ctx *gin.Context) {
 // @Produce image/png
 // @Produce image/jpeg
 // @Success 200 {file} binary "Email logo image"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/email [get]
-func (c *AppImagesController) getEmailLogoHandler(ctx *gin.Context) {
-	c.getImage(ctx, "logoEmail")
+func (c *AppImagesController) getEmailLogoHandler(ctx *gin.Context) error {
+	return c.getImage(ctx, "logoEmail")
 }
 
 // getBackgroundImageHandler godoc
@@ -83,9 +82,10 @@ func (c *AppImagesController) getEmailLogoHandler(ctx *gin.Context) {
 // @Produce image/png
 // @Produce image/jpeg
 // @Success 200 {file} binary "Background image"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/background [get]
-func (c *AppImagesController) getBackgroundImageHandler(ctx *gin.Context) {
-	c.getImage(ctx, "background")
+func (c *AppImagesController) getBackgroundImageHandler(ctx *gin.Context) error {
+	return c.getImage(ctx, "background")
 }
 
 // getFaviconHandler godoc
@@ -94,9 +94,10 @@ func (c *AppImagesController) getBackgroundImageHandler(ctx *gin.Context) {
 // @Tags Application Images
 // @Produce image/x-icon
 // @Success 200 {file} binary "Favicon image"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/favicon [get]
-func (c *AppImagesController) getFaviconHandler(ctx *gin.Context) {
-	c.getImage(ctx, "favicon")
+func (c *AppImagesController) getFaviconHandler(ctx *gin.Context) error {
+	return c.getImage(ctx, "favicon")
 }
 
 // getDefaultProfilePicture godoc
@@ -106,9 +107,10 @@ func (c *AppImagesController) getFaviconHandler(ctx *gin.Context) {
 // @Produce image/png
 // @Produce image/jpeg
 // @Success 200 {file} binary "Default profile picture image"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/default-profile-picture [get]
-func (c *AppImagesController) getDefaultProfilePicture(ctx *gin.Context) {
-	c.getImage(ctx, "default-profile-picture")
+func (c *AppImagesController) getDefaultProfilePicture(ctx *gin.Context) error {
+	return c.getImage(ctx, "default-profile-picture")
 }
 
 // updateLogoHandler godoc
@@ -119,26 +121,45 @@ func (c *AppImagesController) getDefaultProfilePicture(ctx *gin.Context) {
 // @Param light query boolean false "Light mode logo (true) or dark mode logo (false)"
 // @Param file formData file true "Logo image file"
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/logo [put]
-func (c *AppImagesController) updateLogoHandler(ctx *gin.Context) {
-	file, err := ctx.FormFile("file")
+func (c *AppImagesController) updateLogoHandler(ctx *gin.Context) error {
+	file, err := httpserver.FormFile(ctx, "file")
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
-	lightLogo, _ := strconv.ParseBool(ctx.DefaultQuery("light", "true"))
-	imageName := "logoLight"
-	if !lightLogo {
-		imageName = "logoDark"
-	}
-
-	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, imageName); err != nil {
-		_ = ctx.Error(err)
-		return
+	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, logoImageName(ctx)); err != nil {
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
+}
+
+// deleteLogoHandler godoc
+// @Summary Delete logo image
+// @Description Delete the custom application logo and restore the default logo
+// @Tags Application Images
+// @Param light query boolean false "Light mode logo (true) or dark mode logo (false)"
+// @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
+// @Router /api/application-images/logo [delete]
+func (c *AppImagesController) deleteLogoHandler(ctx *gin.Context) error {
+	if err := c.appImagesService.DeleteImage(ctx.Request.Context(), logoImageName(ctx)); err != nil {
+		return err
+	}
+
+	ctx.Status(http.StatusNoContent)
+	return nil
+}
+
+func logoImageName(ctx *gin.Context) string {
+	lightLogo, _ := strconv.ParseBool(ctx.DefaultQuery("light", "true"))
+	if lightLogo {
+		return "logoLight"
+	}
+	return "logoDark"
 }
 
 // updateEmailLogoHandler godoc
@@ -148,28 +169,27 @@ func (c *AppImagesController) updateLogoHandler(ctx *gin.Context) {
 // @Accept multipart/form-data
 // @Param file formData file true "Email logo image file"
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/email [put]
-func (c *AppImagesController) updateEmailLogoHandler(ctx *gin.Context) {
-	file, err := ctx.FormFile("file")
+func (c *AppImagesController) updateEmailLogoHandler(ctx *gin.Context) error {
+	file, err := httpserver.FormFile(ctx, "file")
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	fileType := utils.GetFileExtension(file.Filename)
 	mimeType := utils.GetImageMimeType(fileType)
 
 	if mimeType != "image/png" && mimeType != "image/jpeg" {
-		_ = ctx.Error(&common.WrongFileTypeError{ExpectedFileType: ".png or .jpg/jpeg"})
-		return
+		return apperror.UnsupportedFileType("PNG or JPEG")
 	}
 
 	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, "logoEmail"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
 
 // updateBackgroundImageHandler godoc
@@ -179,20 +199,20 @@ func (c *AppImagesController) updateEmailLogoHandler(ctx *gin.Context) {
 // @Accept multipart/form-data
 // @Param file formData file true "Background image file"
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/background [put]
-func (c *AppImagesController) updateBackgroundImageHandler(ctx *gin.Context) {
-	file, err := ctx.FormFile("file")
+func (c *AppImagesController) updateBackgroundImageHandler(ctx *gin.Context) error {
+	file, err := httpserver.FormFile(ctx, "file")
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, "background"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
 
 // deleteBackgroundImageHandler godoc
@@ -200,14 +220,15 @@ func (c *AppImagesController) updateBackgroundImageHandler(ctx *gin.Context) {
 // @Description Delete the application background image
 // @Tags Application Images
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/background [delete]
-func (c *AppImagesController) deleteBackgroundImageHandler(ctx *gin.Context) {
+func (c *AppImagesController) deleteBackgroundImageHandler(ctx *gin.Context) error {
 	if err := c.appImagesService.DeleteImage(ctx.Request.Context(), "background"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
 
 // updateFaviconHandler godoc
@@ -217,40 +238,39 @@ func (c *AppImagesController) deleteBackgroundImageHandler(ctx *gin.Context) {
 // @Accept multipart/form-data
 // @Param file formData file true "Favicon file (.svg/.png/.ico)"
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/favicon [put]
-func (c *AppImagesController) updateFaviconHandler(ctx *gin.Context) {
-	file, err := ctx.FormFile("file")
+func (c *AppImagesController) updateFaviconHandler(ctx *gin.Context) error {
+	file, err := httpserver.FormFile(ctx, "file")
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	fileType := utils.GetFileExtension(file.Filename)
 	mimeType := utils.GetImageMimeType(strings.ToLower(fileType))
 	if !slices.Contains([]string{"image/svg+xml", "image/png", "image/x-icon"}, mimeType) {
-		_ = ctx.Error(&common.WrongFileTypeError{ExpectedFileType: ".svg or .png or .ico"})
-		return
+		return apperror.UnsupportedFileType("SVG, PNG, or ICO")
 	}
 
 	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, "favicon"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
 
-func (c *AppImagesController) getImage(ctx *gin.Context, name string) {
+func (c *AppImagesController) getImage(ctx *gin.Context, name string) error {
 	reader, size, mimeType, err := c.appImagesService.GetImage(ctx.Request.Context(), name)
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 	defer reader.Close()
 
 	ctx.Header("Content-Type", mimeType)
 	utils.SetCacheControlHeader(ctx, 15*time.Minute, 24*time.Hour)
 	ctx.DataFromReader(http.StatusOK, size, mimeType, reader, nil)
+	return nil
 }
 
 // updateDefaultProfilePicture godoc
@@ -260,20 +280,20 @@ func (c *AppImagesController) getImage(ctx *gin.Context, name string) {
 // @Accept multipart/form-data
 // @Param file formData file true "Profile picture image file"
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/default-profile-picture [put]
-func (c *AppImagesController) updateDefaultProfilePicture(ctx *gin.Context) {
-	file, err := ctx.FormFile("file")
+func (c *AppImagesController) updateDefaultProfilePicture(ctx *gin.Context) error {
+	file, err := httpserver.FormFile(ctx, "file")
 	if err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	if err := c.appImagesService.UpdateImage(ctx.Request.Context(), file, "default-profile-picture"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
 
 // deleteDefaultProfilePicture godoc
@@ -281,12 +301,13 @@ func (c *AppImagesController) updateDefaultProfilePicture(ctx *gin.Context) {
 // @Description Delete the default profile picture image
 // @Tags Application Images
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-images/default-profile-picture [delete]
-func (c *AppImagesController) deleteDefaultProfilePicture(ctx *gin.Context) {
+func (c *AppImagesController) deleteDefaultProfilePicture(ctx *gin.Context) error {
 	if err := c.appImagesService.DeleteImage(ctx.Request.Context(), "default-profile-picture"); err != nil {
-		_ = ctx.Error(err)
-		return
+		return err
 	}
 
 	ctx.Status(http.StatusNoContent)
+	return nil
 }
