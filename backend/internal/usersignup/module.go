@@ -11,6 +11,7 @@ import (
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 )
 
@@ -26,11 +27,6 @@ type UserCreator interface {
 	CreateUserInternal(ctx context.Context, dbConfig *appconfig.AppConfigModel, input dto.UserCreateDto, isLdapSync bool, tx *gorm.DB) (model.User, error)
 }
 
-// AppConfigResolver loads the current application configuration, so handlers can pass it explicitly to the service methods that need it
-type AppConfigResolver interface {
-	GetConfig(ctx context.Context) (*appconfig.AppConfigModel, error)
-}
-
 type Dependencies struct {
 	DB     *gorm.DB
 	Actors *local.Host
@@ -38,7 +34,7 @@ type Dependencies struct {
 	Signer      TokenService
 	AuditLog    AuditLogger
 	UserCreator UserCreator
-	AppConfig   AppConfigResolver
+	AppConfig   appconfig.AppConfigResolver
 }
 
 type Module struct {
@@ -77,10 +73,10 @@ func (m *Module) RunSignupTokenMigration(ctx context.Context) error {
 // RegisterRoutes mounts the signup and signup-token management endpoints
 // adminAuth guards the admin token-management routes; signupRateLimit throttles public self-signup
 func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, adminAuth, signupRateLimit gin.HandlerFunc) {
-	apiGroup.POST("/signup-tokens", adminAuth, m.handler.createSignupToken)
-	apiGroup.GET("/signup-tokens", adminAuth, m.handler.listSignupTokens)
-	apiGroup.DELETE("/signup-tokens/:id", adminAuth, m.handler.deleteSignupToken)
-	apiGroup.POST("/signup", signupRateLimit, m.handler.signup)
-	apiGroup.GET("/signup/setup", m.handler.checkInitialAdminSetupAvailable)
-	apiGroup.POST("/signup/setup", m.handler.signUpInitialAdmin)
+	apiGroup.POST("/signup-tokens", adminAuth, httpserver.Handle(m.handler.createSignupToken))
+	apiGroup.GET("/signup-tokens", adminAuth, httpserver.Handle(m.handler.listSignupTokens))
+	apiGroup.DELETE("/signup-tokens/:id", adminAuth, httpserver.Handle(m.handler.deleteSignupToken))
+	apiGroup.POST("/signup", signupRateLimit, httpserver.Handle(m.handler.signup))
+	apiGroup.GET("/signup/setup", httpserver.Handle(m.handler.checkInitialAdminSetupAvailable))
+	apiGroup.POST("/signup/setup", httpserver.Handle(m.handler.signUpInitialAdmin))
 }
