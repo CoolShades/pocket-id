@@ -10,6 +10,7 @@ type OidcClientMetaDataDto struct {
 	HasDarkLogo              bool    `json:"hasDarkLogo"`
 	LaunchURL                *string `json:"launchURL"`
 	RequiresReauthentication bool    `json:"requiresReauthentication"`
+	ClientType               string  `json:"clientType"`
 }
 
 type OidcClientDto struct {
@@ -23,6 +24,8 @@ type OidcClientDto struct {
 	Credentials                         OidcClientCredentialsDto `json:"credentials"`
 	IsGroupRestricted                   bool                     `json:"isGroupRestricted"`
 	PkceSupported                       bool                     `json:"pkceSupported,omitempty"`
+	AccessTokenDurationMinutes          int64                    `json:"accessTokenDurationMinutes"`
+	RefreshTokenDurationMinutes         int64                    `json:"refreshTokenDurationMinutes"`
 }
 
 type OidcClientWithAllowedUserGroupsDto struct {
@@ -52,6 +55,8 @@ type OidcClientUpdateDto struct {
 	LogoURL                             *string                  `json:"logoUrl"`
 	DarkLogoURL                         *string                  `json:"darkLogoUrl"`
 	IsGroupRestricted                   bool                     `json:"isGroupRestricted"`
+	AccessTokenDurationMinutes          int64                    `json:"accessTokenDurationMinutes" binding:"omitempty,token_duration"`
+	RefreshTokenDurationMinutes         int64                    `json:"refreshTokenDurationMinutes" binding:"omitempty,token_duration"`
 }
 
 type OidcClientCreateDto struct {
@@ -59,12 +64,34 @@ type OidcClientCreateDto struct {
 	ID string `json:"id" binding:"omitempty,client_id,min=2,max=128"`
 }
 
+// OidcClientSecretDto describes a client secret without disclosing its value, which is only ever returned right after the secret is created
 type OidcClientSecretDto struct {
+	ID string `json:"id"`
+	// Prefix holds the first few characters of the secret in clear text, and is empty for secrets migrated from the single-secret column
+	Prefix    string             `json:"prefix"`
+	CreatedAt datatype.DateTime  `json:"createdAt"`
+	ExpiresAt *datatype.DateTime `json:"expiresAt"`
+	IsActive  bool               `json:"isActive"`
+}
+
+// OidcClientSecretCreateDto is the request body for creating a new client secret
+type OidcClientSecretCreateDto struct {
+	// Secret allows callers to supply their own value instead of having Pocket ID generate one
 	Secret string `json:"secret" binding:"omitempty,min=16,printascii"`
+	// ExpiresAt makes the secret unusable after the given time (if nil, secrets don't expire)
+	ExpiresAt *datatype.DateTime `json:"expiresAt"`
+}
+
+// OidcClientSecretCreatedDto is returned when a secret is created, and is the only response that contains the secret's value
+type OidcClientSecretCreatedDto struct {
+	OidcClientSecretDto
+	Secret string `json:"secret"`
 }
 
 type OidcClientCredentialsDto struct {
 	FederatedIdentities []OidcClientFederatedIdentityDto `json:"federatedIdentities,omitempty"`
+	// Secrets is read-only: secrets are managed through the dedicated client secret endpoints and any value sent by a client is ignored
+	Secrets []OidcClientSecretDto `json:"secrets"`
 }
 
 type OidcClientFederatedIdentityDto struct {

@@ -9,7 +9,7 @@ import (
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"gorm.io/gorm"
 
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
@@ -59,6 +59,9 @@ func (s *UserGroupService) getInternal(ctx context.Context, id string, tx *gorm.
 		Preload("AllowedOidcClients").
 		First(&group).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.UserGroup{}, apperror.NotFound("User group")
+	}
 	return group, err
 }
 
@@ -74,13 +77,16 @@ func (s *UserGroupService) Delete(ctx context.Context, cfg *appconfig.AppConfigM
 		Where("id = ?", id).
 		First(&group).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return apperror.NotFound("User group")
+	}
 	if err != nil {
 		return err
 	}
 
 	// Disallow deleting the group if it is an LDAP group and LDAP is enabled
 	if group.LdapID != nil && cfg.LdapEnabled.IsTrue() {
-		return &common.LdapUserGroupUpdateError{}
+		return apperror.LdapUserGroupUpdate()
 	}
 
 	err = tx.
@@ -104,11 +110,13 @@ func (s *UserGroupService) Delete(ctx context.Context, cfg *appconfig.AppConfigM
 }
 
 func (s *UserGroupService) Create(ctx context.Context, input dto.UserGroupCreateDto) (group model.UserGroup, err error) {
-	return s.createInternal(ctx, input, s.db)
+	return s.CreateInternal(ctx, input, s.db)
 }
 
-func (s *UserGroupService) createInternal(ctx context.Context, input dto.UserGroupCreateDto, tx *gorm.DB) (group model.UserGroup, err error) {
-	group = model.UserGroup{
+// CreateInternal creates a user group within an existing transaction
+// It's exported for the LDAP sync, which reconciles users and groups in a single transaction of its own
+func (s *UserGroupService) CreateInternal(ctx context.Context, input dto.UserGroupCreateDto, tx *gorm.DB) (model.UserGroup, error) {
+	group := model.UserGroup{
 		FriendlyName: input.FriendlyName,
 		Name:         input.Name,
 	}
@@ -117,13 +125,13 @@ func (s *UserGroupService) createInternal(ctx context.Context, input dto.UserGro
 		group.LdapID = &input.LdapID
 	}
 
-	err = tx.
+	err := tx.
 		WithContext(ctx).
 		Preload("Users").
 		Create(&group).
 		Error
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return model.UserGroup{}, &common.AlreadyInUseError{Property: "name"}
+		return model.UserGroup{}, apperror.AlreadyInUse("name")
 	} else if err != nil {
 		return model.UserGroup{}, err
 	}
@@ -154,6 +162,12 @@ func (s *UserGroupService) Update(ctx context.Context, cfg *appconfig.AppConfigM
 	return group, nil
 }
 
+// UpdateInternal updates a user group within an existing transaction
+// It's exported for the LDAP sync, which reconciles users and groups in a single transaction of its own
+func (s *UserGroupService) UpdateInternal(ctx context.Context, cfg *appconfig.AppConfigModel, id string, input dto.UserGroupCreateDto, isLdapSync bool, tx *gorm.DB) (model.UserGroup, error) {
+	return s.updateInternal(ctx, id, input, isLdapSync, tx, cfg)
+}
+
 func (s *UserGroupService) updateInternal(ctx context.Context, id string, input dto.UserGroupCreateDto, isLdapSync bool, tx *gorm.DB, cfg *appconfig.AppConfigModel) (group model.UserGroup, err error) {
 	group, err = s.getInternal(ctx, id, tx)
 	if err != nil {
@@ -163,7 +177,7 @@ func (s *UserGroupService) updateInternal(ctx context.Context, id string, input 
 	// Disallow updating the group if it is an LDAP group and LDAP is enabled
 	if !isLdapSync && group.LdapID != nil {
 		if cfg.LdapEnabled.IsTrue() {
-			return model.UserGroup{}, &common.LdapUserGroupUpdateError{}
+			return model.UserGroup{}, apperror.LdapUserGroupUpdate()
 		}
 	}
 
@@ -177,7 +191,7 @@ func (s *UserGroupService) updateInternal(ctx context.Context, id string, input 
 		Save(&group).
 		Error
 	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return model.UserGroup{}, &common.AlreadyInUseError{Property: "name"}
+		return model.UserGroup{}, apperror.AlreadyInUse("name")
 	} else if err != nil {
 		return model.UserGroup{}, err
 	}
@@ -195,7 +209,7 @@ func (s *UserGroupService) UpdateUsers(ctx context.Context, id string, userIds [
 		tx.Rollback()
 	}()
 
-	group, err = s.updateUsersInternal(ctx, id, userIds, tx)
+	group, err = s.UpdateUsersInternal(ctx, id, userIds, tx)
 	if err != nil {
 		return model.UserGroup{}, err
 	}
@@ -208,8 +222,10 @@ func (s *UserGroupService) UpdateUsers(ctx context.Context, id string, userIds [
 	return group, nil
 }
 
-func (s *UserGroupService) updateUsersInternal(ctx context.Context, id string, userIds []string, tx *gorm.DB) (group model.UserGroup, err error) {
-	group, err = s.getInternal(ctx, id, tx)
+// UpdateUsersInternal replaces the members of a user group within an existing transaction
+// It's exported for the LDAP sync, which reconciles users and groups in a single transaction of its own
+func (s *UserGroupService) UpdateUsersInternal(ctx context.Context, id string, userIds []string, tx *gorm.DB) (model.UserGroup, error) {
+	group, err := s.getInternal(ctx, id, tx)
 	if err != nil {
 		return model.UserGroup{}, err
 	}
@@ -269,6 +285,9 @@ func (s *UserGroupService) GetUserCountOfGroup(ctx context.Context, id string) (
 		Where("id = ?", id).
 		First(&group).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, apperror.NotFound("User group")
+	}
 	if err != nil {
 		return 0, err
 	}
