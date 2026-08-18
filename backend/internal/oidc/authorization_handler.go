@@ -5,12 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/ory/fosite"
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/cookie"
 )
@@ -20,18 +21,15 @@ const parRequestURIPrefix = "urn:ietf:params:oauth:request_uri:"
 type authorizationHandler struct {
 	provider             fosite.OAuth2Provider
 	authorizationService *authorizationService
-	baseURL              string
 }
 
 func newAuthorizationHandler(
 	provider fosite.OAuth2Provider,
 	authorizationService *authorizationService,
-	baseURL string,
 ) *authorizationHandler {
 	return &authorizationHandler{
 		provider:             provider,
 		authorizationService: authorizationService,
-		baseURL:              baseURL,
 	}
 }
 
@@ -98,8 +96,6 @@ func (h *authorizationHandler) authorize(c *gin.Context) {
 		return
 	}
 
-	response.AddParameter("iss", h.baseURL)
-
 	// fosite renders an auto-submitting HTML page for response_mode=form_post, which needs a relaxed CSP
 	h.relaxCSPForFormPost(c, ar)
 
@@ -124,8 +120,8 @@ func (h *authorizationHandler) completeInteraction(c *gin.Context) {
 	typedAuthenticationTime, _ := authenticationTime.(time.Time)
 
 	var request completeInteractionRequest
-	if err := c.ShouldBindJSON(&request); err != nil {
-		_ = c.Error(&common.ValidationError{Message: "invalid interaction request"})
+	if err := httpserver.BindJSON(c, &request); err != nil {
+		_ = c.Error(err)
 		return
 	}
 
@@ -140,6 +136,12 @@ func (h *authorizationHandler) completeInteraction(c *gin.Context) {
 }
 
 func (h *authorizationHandler) writeAuthorizeError(ctx context.Context, c *gin.Context, ar fosite.AuthorizeRequester, err error) {
+	// Keep authorization policy denials in Pocket ID so users can see why access was refused
+	if errors.Is(err, fosite.ErrAccessDenied) {
+		h.redirectToInteractionError(c, err)
+		return
+	}
+
 	if ar.IsRedirectURIValid() {
 		// Send the error to the client
 		// fosite delivers the error through response_mode=form_post as well, so it needs the same CSP relaxation as the success path
@@ -148,8 +150,10 @@ func (h *authorizationHandler) writeAuthorizeError(ctx context.Context, c *gin.C
 		return
 	}
 
-	// If no redirect URI is available, we can't send the error to the client,
-	// so we redirect to a generic error page instead.
+	h.redirectToInteractionError(c, err)
+}
+
+func (h *authorizationHandler) redirectToInteractionError(c *gin.Context, err error) {
 	errorMessage := "An unknown error occurred during the authorization request."
 	if err, ok := errors.AsType[*fosite.RFC6749Error](err); ok {
 		if err.HintField != "" {
@@ -159,7 +163,9 @@ func (h *authorizationHandler) writeAuthorizeError(ctx context.Context, c *gin.C
 		}
 	}
 
-	c.Redirect(http.StatusFound, "/interaction/error?error="+errorMessage)
+	query := url.Values{}
+	query.Set("error", errorMessage)
+	c.Redirect(http.StatusFound, "/interaction/error?"+query.Encode())
 }
 
 func requestMetaFromGin(c *gin.Context) requestMeta {

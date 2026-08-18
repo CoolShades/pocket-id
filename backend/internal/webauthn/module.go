@@ -2,13 +2,17 @@ package webauthn
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/italypaleale/francis/host/local"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 )
 
@@ -23,18 +27,17 @@ type AuditLogger interface {
 	CreateNewSignInWithEmail(ctx context.Context, ipAddress, userAgent, userID string, tx *gorm.DB, emailLoginNotificationEnabled bool) model.AuditLog
 }
 
-// AppConfigResolver loads the current application configuration, so handlers can pass it explicitly to the service methods that need it
-type AppConfigResolver interface {
-	GetConfig(ctx context.Context) (*appconfig.AppConfigModel, error)
-}
-
 type Dependencies struct {
 	DB     *gorm.DB
+	Actors *local.Host
 	AppURL string
 
 	Signer    TokenService
 	AuditLog  AuditLogger
-	AppConfig AppConfigResolver
+	AppConfig appconfig.AppConfigResolver
+
+	// CleanupDisabled skips registering the cron jobs that delete expired rows from the database, for example in tests
+	CleanupDisabled bool
 }
 
 type Module struct {
@@ -48,6 +51,25 @@ func New(deps Dependencies) (*Module, error) {
 		return nil, err
 	}
 
+	// Register the cleanup jobs for expired WebAuthn rows
+	if !deps.CleanupDisabled {
+		if deps.Actors == nil {
+			return nil, errors.New("actor host is required for the WebAuthn cleanup cron jobs")
+		}
+
+		jobs, err := newCleanupJobs(deps.DB)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, cj := range jobs {
+			err = deps.Actors.RegisterBuiltInActor(cj)
+			if err != nil {
+				return nil, fmt.Errorf("error registering WebAuthn cleanup cron actor %q: %w", cj.ActorType(), err)
+			}
+		}
+	}
+
 	return &Module{
 		service: service,
 		handler: newHandler(service, deps.AppConfig),
@@ -55,20 +77,20 @@ func New(deps Dependencies) (*Module, error) {
 }
 
 // RegisterRoutes mounts the WebAuthn registration, login and reauthentication endpoints
-func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, userAuth, loginRateLimit, reauthRateLimit gin.HandlerFunc) {
-	apiGroup.GET("/webauthn/register/start", userAuth, m.handler.beginRegistration)
-	apiGroup.POST("/webauthn/register/finish", userAuth, m.handler.verifyRegistration)
+func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, userAuth, browserAuth, loginRateLimit, reauthRateLimit gin.HandlerFunc) {
+	apiGroup.GET("/webauthn/register/start", browserAuth, httpserver.Handle(m.handler.beginRegistration))
+	apiGroup.POST("/webauthn/register/finish", browserAuth, httpserver.Handle(m.handler.verifyRegistration))
 
-	apiGroup.GET("/webauthn/login/start", m.handler.beginLogin)
-	apiGroup.POST("/webauthn/login/finish", loginRateLimit, m.handler.verifyLogin)
+	apiGroup.GET("/webauthn/login/start", httpserver.Handle(m.handler.beginLogin))
+	apiGroup.POST("/webauthn/login/finish", loginRateLimit, httpserver.Handle(m.handler.verifyLogin))
 
-	apiGroup.POST("/webauthn/logout", userAuth, m.handler.logout)
+	apiGroup.POST("/webauthn/logout", userAuth, httpserver.Handle(m.handler.logout))
 
-	apiGroup.POST("/webauthn/reauthenticate", userAuth, reauthRateLimit, m.handler.reauthenticate)
+	apiGroup.POST("/webauthn/reauthenticate", browserAuth, reauthRateLimit, httpserver.Handle(m.handler.reauthenticate))
 
-	apiGroup.GET("/webauthn/credentials", userAuth, m.handler.listCredentials)
-	apiGroup.PATCH("/webauthn/credentials/:id", userAuth, m.handler.updateCredential)
-	apiGroup.DELETE("/webauthn/credentials/:id", userAuth, m.handler.deleteCredential)
+	apiGroup.GET("/webauthn/credentials", userAuth, httpserver.Handle(m.handler.listCredentials))
+	apiGroup.PATCH("/webauthn/credentials/:id", userAuth, httpserver.Handle(m.handler.updateCredential))
+	apiGroup.DELETE("/webauthn/credentials/:id", userAuth, httpserver.Handle(m.handler.deleteCredential))
 }
 
 // ConsumeReauthenticationToken implements the OIDC module's ReauthenticationTokenConsumer interface

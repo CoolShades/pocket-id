@@ -9,8 +9,8 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
-	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/tracing"
 )
 
@@ -27,26 +27,22 @@ func NewAppConfigController(
 	authMiddleware *middleware.AuthMiddleware,
 	appConfigService *appconfig.AppConfigService,
 	emailSender TestEmailSender,
-	ldapService *service.LdapService,
 ) {
 
 	acc := &AppConfigController{
 		appConfigService: appConfigService,
 		emailSender:      emailSender,
-		ldapService:      ldapService,
 	}
-	group.GET("/application-configuration", acc.listAppConfigHandler)
-	group.GET("/application-configuration/all", authMiddleware.Add(), acc.listAllAppConfigHandler)
-	group.PUT("/application-configuration", authMiddleware.Add(), acc.updateAppConfigHandler)
+	group.GET("/application-configuration", httpserver.Handle(acc.listAppConfigHandler))
+	group.GET("/application-configuration/all", authMiddleware.Add(), httpserver.Handle(acc.listAllAppConfigHandler))
+	group.PUT("/application-configuration", authMiddleware.Add(), httpserver.Handle(acc.updateAppConfigHandler))
 
-	group.POST("/application-configuration/test-email", authMiddleware.Add(), acc.testEmailHandler)
-	group.POST("/application-configuration/sync-ldap", authMiddleware.Add(), acc.syncLdapHandler)
+	group.POST("/application-configuration/test-email", authMiddleware.Add(), httpserver.Handle(acc.testEmailHandler))
 }
 
 type AppConfigController struct {
 	appConfigService *appconfig.AppConfigService
 	emailSender      TestEmailSender
-	ldapService      *service.LdapService
 }
 
 // listAppConfigHandler godoc
@@ -56,19 +52,18 @@ type AppConfigController struct {
 // @Accept json
 // @Produce json
 // @Success 200 {array} dto.PublicAppConfigVariableDto
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-configuration [get]
-func (acc *AppConfigController) listAppConfigHandler(c *gin.Context) {
+func (acc *AppConfigController) listAppConfigHandler(c *gin.Context) error {
 	dbConfig, err := acc.appConfigService.GetConfig(c.Request.Context())
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 	configuration := dbConfig.ToAppConfigVariableSlice(false, true)
 
 	var configVariablesDto []dto.PublicAppConfigVariableDto
 	if err := dto.MapStructList(configuration, &configVariablesDto); err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	// Manually add uiConfigDisabled which isn't in the database but defined with an environment variable
@@ -82,10 +77,10 @@ func (acc *AppConfigController) listAppConfigHandler(c *gin.Context) {
 	configVariablesDto = append(configVariablesDto, dto.PublicAppConfigVariableDto{
 		Key:   "tracingEnabled",
 		Value: strconv.FormatBool(tracing.FrontendTracingEnabled()),
-		Type:  "boolean",
 	})
 
 	c.JSON(http.StatusOK, configVariablesDto)
+	return nil
 }
 
 // listAllAppConfigHandler godoc
@@ -95,22 +90,22 @@ func (acc *AppConfigController) listAppConfigHandler(c *gin.Context) {
 // @Accept json
 // @Produce json
 // @Success 200 {array} dto.AppConfigVariableDto
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-configuration/all [get]
-func (acc *AppConfigController) listAllAppConfigHandler(c *gin.Context) {
+func (acc *AppConfigController) listAllAppConfigHandler(c *gin.Context) error {
 	dbConfig, err := acc.appConfigService.GetConfig(c.Request.Context())
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 	configuration := dbConfig.ToAppConfigVariableSlice(true, true)
 
 	var configVariablesDto []dto.AppConfigVariableDto
 	if err := dto.MapStructList(configuration, &configVariablesDto); err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	c.JSON(http.StatusOK, configVariablesDto)
+	return nil
 }
 
 // updateAppConfigHandler godoc
@@ -121,49 +116,26 @@ func (acc *AppConfigController) listAllAppConfigHandler(c *gin.Context) {
 // @Produce json
 // @Param body body dto.AppConfigUpdateDto true "Application Configuration"
 // @Success 200 {array} dto.AppConfigVariableDto
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-configuration [put]
-func (acc *AppConfigController) updateAppConfigHandler(c *gin.Context) {
+func (acc *AppConfigController) updateAppConfigHandler(c *gin.Context) error {
 	var input dto.AppConfigUpdateDto
-	if err := dto.ShouldBindWithNormalizedJSON(c, &input); err != nil {
-		_ = c.Error(err)
-		return
+	if err := httpserver.BindJSON(c, &input); err != nil {
+		return err
 	}
 
 	savedConfigVariables, err := acc.appConfigService.UpdateAppConfig(c.Request.Context(), input)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	var configVariablesDto []dto.AppConfigVariableDto
 	if err := dto.MapStructList(savedConfigVariables, &configVariablesDto); err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	c.JSON(http.StatusOK, configVariablesDto)
-}
-
-// syncLdapHandler godoc
-// @Summary Synchronize LDAP
-// @Description Manually trigger LDAP synchronization
-// @Tags Application Configuration
-// @Success 204 "No Content"
-// @Router /api/application-configuration/sync-ldap [post]
-func (acc *AppConfigController) syncLdapHandler(c *gin.Context) {
-	dbConfig, err := acc.appConfigService.GetConfig(c.Request.Context())
-	if err != nil {
-		_ = c.Error(err)
-		return
-	}
-
-	err = acc.ldapService.SyncAll(c.Request.Context(), dbConfig)
-	if err != nil {
-		_ = c.Error(err)
-		return
-	}
-
-	c.Status(http.StatusNoContent)
+	return nil
 }
 
 // testEmailHandler godoc
@@ -171,21 +143,21 @@ func (acc *AppConfigController) syncLdapHandler(c *gin.Context) {
 // @Description Send a test email to verify email configuration
 // @Tags Application Configuration
 // @Success 204 "No Content"
+// @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/application-configuration/test-email [post]
-func (acc *AppConfigController) testEmailHandler(c *gin.Context) {
+func (acc *AppConfigController) testEmailHandler(c *gin.Context) error {
 	dbConfig, err := acc.appConfigService.GetConfig(c.Request.Context())
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	userID := c.GetString("userID")
 
 	err = acc.emailSender.SendTestEmail(c.Request.Context(), dbConfig, userID)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	c.Status(http.StatusNoContent)
+	return nil
 }

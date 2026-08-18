@@ -96,6 +96,54 @@ test.describe('Update user creation configuration', () => {
 	});
 });
 
+test('Update passkey configuration', async ({ page }) => {
+	await page.getByRole('tab', { name: 'Passkeys' }).click();
+
+	const userVerification = page.getByLabel('User verification');
+	const authenticatorType = page.getByLabel('Allowed authenticator type');
+	const allowSyncedPasskeys = page.getByRole('switch', { name: 'Allow synced passkeys' });
+
+	await expect(userVerification).toContainText('Required');
+	await userVerification.click();
+	await page.getByRole('option', { name: 'Preferred' }).click();
+
+	await expect(authenticatorType).toContainText('Any passkey');
+	await authenticatorType.click();
+	await page.getByRole('option', { name: 'External security keys only' }).click();
+
+	await expect(allowSyncedPasskeys).toBeChecked();
+	await allowSyncedPasskeys.click();
+
+	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	await expect(page.locator('[data-type="success"]')).toHaveText(
+		'Passkey configuration updated successfully'
+	);
+
+	const registrationResponse = await page.request.get('/api/webauthn/register/start');
+	expect(registrationResponse.ok()).toBeTruthy();
+	await expect(registrationResponse.json()).resolves.toMatchObject({
+		authenticatorSelection: {
+			authenticatorAttachment: 'cross-platform',
+			userVerification: 'preferred'
+		}
+	});
+
+	const loginResponse = await page.request.get('/api/webauthn/login/start');
+	expect(loginResponse.ok()).toBeTruthy();
+	await expect(loginResponse.json()).resolves.toMatchObject({
+		userVerification: 'preferred'
+	});
+
+	await page.reload();
+	await page.getByRole('tab', { name: 'Passkeys' }).click();
+
+	await expect(page.getByLabel('User verification')).toContainText('Preferred');
+	await expect(page.getByLabel('Allowed authenticator type')).toContainText(
+		'External security keys only'
+	);
+	await expect(page.getByRole('switch', { name: 'Allow synced passkeys' })).not.toBeChecked();
+});
+
 test('Update email configuration', async ({ page }) => {
 	await page.getByRole('tab', { name: 'Email' }).click();
 
@@ -129,22 +177,26 @@ test('Update email configuration', async ({ page }) => {
 });
 
 test.describe('Update application images', () => {
-	test.beforeEach(async ({ page }) => {
-		await page.getByRole('tab', { name: 'Images' }).click();
-	});
-
-	test('should upload images', async ({ page }) => {
-		await page.getByLabel('Favicon').setInputFiles('resources/images/w3-schools-favicon.ico');
+	test('should upload images and reset custom logos', async ({ page }) => {
 		await page
-			.getByLabel('Light Mode Logo')
-			.setInputFiles('resources/images/pingvin-share-logo.png');
-		await page.getByLabel('Dark Mode Logo').setInputFiles('resources/images/cloud-logo.png');
-		await page.getByLabel('Email Logo').setInputFiles('resources/images/pingvin-share-logo.png');
+			.getByLabel('Favicon', { exact: true })
+			.setInputFiles('resources/images/w3-schools-favicon.ico');
 		await page
-			.getByLabel('Default Profile Picture')
+			.getByLabel('Light Mode Logo', { exact: true })
 			.setInputFiles('resources/images/pingvin-share-logo.png');
-		await page.getByLabel('Background Image').setInputFiles('resources/images/clouds.jpg');
-		await page.getByRole('button', { name: 'Save' }).click();
+		await page
+			.getByLabel('Dark Mode Logo', { exact: true })
+			.setInputFiles('resources/images/cloud-logo.png');
+		await page
+			.getByLabel('Email Logo', { exact: true })
+			.setInputFiles('resources/images/pingvin-share-logo.png');
+		await page
+			.getByLabel('Default Profile Picture', { exact: true })
+			.setInputFiles('resources/images/pingvin-share-logo.png');
+		await page
+			.getByLabel('Background Image', { exact: true })
+			.setInputFiles('resources/images/clouds.jpg');
+		await page.getByRole('button', { name: 'Save', exact: true }).nth(1).click();
 
 		await expect(page.locator('[data-type="success"]')).toHaveText(
 			'Images updated successfully. It may take a few minutes to update.'
@@ -165,16 +217,48 @@ test.describe('Update application images', () => {
 		await page.request
 			.get('/api/application-images/background')
 			.then((res) => expect.soft(res.status()).toBe(200));
+
+		await page
+			.getByRole('button', { name: 'Reset to default Light Mode Logo', exact: true })
+			.click();
+		await page
+			.getByRole('button', { name: 'Reset to default Dark Mode Logo', exact: true })
+			.click();
+		const logoDeleteResponses = [true, false].map((light) =>
+			page.waitForResponse((response) => {
+				const url = new URL(response.url());
+				return (
+					response.request().method() === 'DELETE' &&
+					url.pathname === '/api/application-images/logo' &&
+					url.searchParams.get('light') === String(light)
+				);
+			})
+		);
+		await page.getByRole('button', { name: 'Save', exact: true }).nth(1).click();
+		for (const response of await Promise.all(logoDeleteResponses)) {
+			expect(response.status()).toBe(204);
+		}
+
+		await expect(page.locator('[data-type="success"]')).toHaveText(
+			'Images updated successfully. It may take a few minutes to update.'
+		);
+
+		await page.request
+			.get('/api/application-images/logo?light=true')
+			.then((res) => expect.soft(res.status()).toBe(404));
+		await page.request
+			.get('/api/application-images/logo?light=false')
+			.then((res) => expect.soft(res.status()).toBe(404));
 	});
 
 	test('should only allow png/jpeg for email logo', async ({ page }) => {
-		const emailLogoInput = page.getByLabel('Email Logo');
+		const emailLogoInput = page.getByLabel('Email Logo', { exact: true });
 
 		await emailLogoInput.setInputFiles('resources/images/cloud-logo.svg');
-		await page.getByRole('button', { name: 'Save' }).click();
+		await page.getByRole('button', { name: 'Save', exact: true }).nth(1).click();
 
 		await expect(page.locator('[data-type="error"]')).toHaveText(
-			'File must be of type .png or .jpg/jpeg'
+			'File must be of type PNG or JPEG'
 		);
 	});
 });

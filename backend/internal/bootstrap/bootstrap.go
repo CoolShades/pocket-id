@@ -92,12 +92,6 @@ func Bootstrap(ctx context.Context) error {
 		DB:          db,
 		FileStorage: fileStorage,
 	}
-	if pg == nil {
-		actorsOpts.SQLite, err = db.DB()
-		if err != nil {
-			return fmt.Errorf("failed to get *sql.DB connection from Gorm: %w", err)
-		}
-	}
 	actors, rateLimitServices, err := NewActors(actorsOpts)
 	if err != nil {
 		return fmt.Errorf("failed to initialize actors: %w", err)
@@ -118,10 +112,13 @@ func Bootstrap(ctx context.Context) error {
 
 	// Register scheduled jobs, only in non-test mode
 	if common.EnvConfig.AppEnv != "test" {
-		err = registerScheduledJobs(ctx, db, svc, scheduler)
+		err = registerScheduledJobs(ctx, svc, scheduler)
 		if err != nil {
 			return fmt.Errorf("failed to register scheduled jobs: %w", err)
 		}
+
+		// Refresh the GeoLite database (this is cached per each replica)
+		services = append(services, svc.geoLiteModule.Run)
 
 		// The scheduler must wait on the actor host being ready, since jobs invoke actors
 		services = append(services, actorsReady.Await(scheduler.Run))
