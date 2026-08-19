@@ -6,19 +6,71 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"golang.org/x/crypto/bcrypt"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
+	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
+	"github.com/pocket-id/pocket-id/backend/internal/oidc"
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
 )
+
+func TestListAuthorizedClientsRejectsMissingUser(t *testing.T) {
+	service := &OidcService{db: testutils.NewDatabaseForTest(t)}
+
+	_, _, err := service.ListAuthorizedClients(t.Context(), "missing-user", utils.ListRequestOptions{})
+
+	require.True(t, apperror.IsCode(err, apperror.CodeUserNotFound))
+}
+
+func TestOidcService_DeleteClientDeletesOAuth2Sessions(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+	require.NoError(t, db.Exec("PRAGMA foreign_keys = ON").Error)
+
+	client := model.OidcClient{Base: model.Base{ID: "deleted-client"}, Name: "Deleted Client"}
+	otherClient := model.OidcClient{Base: model.Base{ID: "other-client"}, Name: "Other Client"}
+	require.NoError(t, db.Create(&client).Error)
+	require.NoError(t, db.Create(&otherClient).Error)
+
+	for i, kind := range []string{"authorize_code", "access_token", "refresh_token", "par", "device_code"} {
+		session := oidc.OAuth2Session{
+			Base:        model.Base{ID: "deleted-client-session-" + strconv.Itoa(i)},
+			Kind:        kind,
+			Key:         "deleted-client-key-" + strconv.Itoa(i),
+			RequestID:   "deleted-client-request",
+			ClientID:    client.ID,
+			Active:      true,
+			RequestData: `{"client_id":"deleted-client","session":{"subject":"test-user","id_token_claims":{"jti":"test-jti"}}}`,
+		}
+		require.NoError(t, db.Create(&session).Error)
+	}
+	require.NoError(t, db.Create(&oidc.OAuth2Session{
+		Base:        model.Base{ID: "other-client-session"},
+		Kind:        "refresh_token",
+		Key:         "other-client-key",
+		RequestID:   "other-client-request",
+		ClientID:    otherClient.ID,
+		Active:      true,
+		RequestData: `{"client_id":"other-client","session":{"subject":"test-user"}}`,
+	}).Error)
+
+	service := &OidcService{db: db}
+	require.NoError(t, service.DeleteClient(t.Context(), client.ID))
+
+	var deletedClientSessionCount int64
+	require.NoError(t, db.Model(&oidc.OAuth2Session{}).Where("client_id = ?", client.ID).Count(&deletedClientSessionCount).Error)
+	assert.Zero(t, deletedClientSessionCount)
+
+	var otherClientSessionCount int64
+	require.NoError(t, db.Model(&oidc.OAuth2Session{}).Where("client_id = ?", otherClient.ID).Count(&otherClientSessionCount).Error)
+	assert.Equal(t, int64(1), otherClientSessionCount)
+}
 
 func TestOidcService_updateClientLogoType(t *testing.T) {
 	// Create a test database
@@ -37,7 +89,7 @@ func TestOidcService_updateClientLogoType(t *testing.T) {
 	// Create a test client
 	client := model.OidcClient{
 		Name:         "Test Client",
-		CallbackURLs: model.UrlList{"https://example.com/callback"},
+		CallbackURLs: datatype.StringList{"https://example.com/callback"},
 	}
 	err = db.Create(&client).Error
 	require.NoError(t, err)
@@ -148,8 +200,20 @@ func TestOidcService_updateClientLogoType(t *testing.T) {
 	t.Run("Returns error for non-existent client", func(t *testing.T) {
 		err := s.updateClientLogoType(t.Context(), "non-existent-client-id", "png", true)
 		require.Error(t, err)
-		require.ErrorContains(t, err, "failed to look up client")
+		require.True(t, apperror.IsCode(err, apperror.CodeNotFound))
 	})
+}
+
+func TestOidcClientImagePath(t *testing.T) {
+	const metadataClientID = "https://app.example.com/oauth/client"
+
+	assert.Equal(t, "oidc-client-images/client-id.png", oidcClientImagePath("client-id", "", "png"))
+	assert.Equal(
+		t,
+		"oidc-client-images/cimd-"+utils.CreateSha256Hash(metadataClientID)+"-dark.webp",
+		oidcClientImagePath(metadataClientID, "-dark", "webp"),
+	)
+	assert.NotContains(t, oidcClientImagePath(metadataClientID, "", "png"), "app.example.com")
 }
 
 func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
@@ -165,7 +229,7 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 	// Create a test client
 	client := model.OidcClient{
 		Name:         "Test Client",
-		CallbackURLs: model.UrlList{"https://example.com/callback"},
+		CallbackURLs: datatype.StringList{"https://example.com/callback"},
 	}
 	err = db.Create(&client).Error
 	require.NoError(t, err)
@@ -346,6 +410,7 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 
 		err := s.downloadAndSaveLogoFromURL(t.Context(), client.ID, "://invalid-url", true)
 		require.Error(t, err)
+		require.True(t, apperror.IsCode(err, apperror.CodeValidationFailed))
 	})
 
 	t.Run("Returns error for non-200 status code", func(t *testing.T) {
@@ -367,7 +432,7 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 
 		err := s.downloadAndSaveLogoFromURL(t.Context(), client.ID, publicLogoHost+"/not-found.png", true)
 		require.Error(t, err)
-		require.ErrorContains(t, err, "failed to fetch logo")
+		require.True(t, apperror.IsCode(err, apperror.CodeLogoDownloadFailed))
 	})
 
 	t.Run("Returns error for too large content", func(t *testing.T) {
@@ -397,7 +462,7 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 
 		err := s.downloadAndSaveLogoFromURL(t.Context(), client.ID, publicLogoHost+"/large.png", true)
 		require.Error(t, err)
-		require.ErrorIs(t, err, errLogoTooLarge)
+		require.True(t, apperror.IsCode(err, apperror.CodeLogoTooLarge))
 	})
 
 	t.Run("Returns error for unsupported file type", func(t *testing.T) {
@@ -423,8 +488,7 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 
 		err := s.downloadAndSaveLogoFromURL(t.Context(), client.ID, publicLogoHost+"/file.txt", true)
 		require.Error(t, err)
-		var fileTypeErr *common.FileTypeNotSupportedError
-		require.ErrorAs(t, err, &fileTypeErr)
+		require.True(t, apperror.IsCode(err, apperror.CodeLogoTypeNotSupported))
 	})
 
 	t.Run("Returns error for non-existent client", func(t *testing.T) {
@@ -450,14 +514,14 @@ func TestOidcService_downloadAndSaveLogoFromURL(t *testing.T) {
 
 		err := s.downloadAndSaveLogoFromURL(t.Context(), "non-existent-client-id", publicLogoHost+"/logo.png", true)
 		require.Error(t, err)
-		require.ErrorContains(t, err, "failed to look up client")
+		require.True(t, apperror.IsCode(err, apperror.CodeNotFound))
 	})
 }
 
 func TestOidcService_CreateClient_withDescription(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
 
-	s, err := NewOidcService(db, nil, nil, nil, nil, nil)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	description := "A test client description"
@@ -482,7 +546,7 @@ func TestOidcService_CreateClient_withDescription(t *testing.T) {
 func TestOidcService_CreateClient_withoutDescription(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
 
-	s, err := NewOidcService(db, nil, nil, nil, nil, nil)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	input := dto.OidcClientCreateDto{
@@ -501,10 +565,101 @@ func TestOidcService_CreateClient_withoutDescription(t *testing.T) {
 	assert.Empty(t, fetched.Description)
 }
 
+func TestOidcService_CreateClient_tokenLifetimes(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		access      int64
+		refresh     int64
+		wantAccess  int64
+		wantRefresh int64
+	}{
+		{
+			name:        "omitted lifetimes fall back to the defaults",
+			wantAccess:  model.DefaultAccessTokenDurationMinutes,
+			wantRefresh: model.DefaultRefreshTokenDurationMinutes,
+		},
+		{
+			name:        "only one lifetime provided",
+			access:      2 * 60,
+			wantAccess:  2 * 60,
+			wantRefresh: model.DefaultRefreshTokenDurationMinutes,
+		},
+		{
+			name:        "both lifetimes provided",
+			access:      2 * 60,
+			refresh:     7 * 24 * 60,
+			wantAccess:  2 * 60,
+			wantRefresh: 7 * 24 * 60,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := testutils.NewDatabaseForTest(t)
+
+			s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+			require.NoError(t, err)
+
+			input := dto.OidcClientCreateDto{
+				OidcClientUpdateDto: dto.OidcClientUpdateDto{
+					Name:                        "Test Client",
+					CallbackURLs:                []string{"https://example.com/callback"},
+					AccessTokenDurationMinutes:  test.access,
+					RefreshTokenDurationMinutes: test.refresh,
+				},
+			}
+
+			client, err := s.CreateClient(t.Context(), input, "user-id")
+			require.NoError(t, err)
+
+			var fetched model.OidcClient
+			err = db.First(&fetched, "id = ?", client.ID).Error
+			require.NoError(t, err)
+			assert.Equal(t, test.wantAccess, fetched.AccessTokenDurationMinutes)
+			assert.Equal(t, test.wantRefresh, fetched.RefreshTokenDurationMinutes)
+		})
+	}
+}
+
+func TestOidcService_UpdateClient_tokenLifetimes(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{
+		Name:                        "Test Client",
+		CallbackURLs:                datatype.StringList{"https://example.com/callback"},
+		AccessTokenDurationMinutes:  2 * 60,
+		RefreshTokenDurationMinutes: 7 * 24 * 60,
+	}
+	require.NoError(t, db.Create(&client).Error)
+
+	// A request that predates the token lifetime fields must be accepted, and resets them to the defaults
+	input := dto.OidcClientUpdateDto{
+		Name:         "Test Client",
+		CallbackURLs: []string{"https://example.com/callback"},
+	}
+	_, err = s.UpdateClient(t.Context(), client.ID, input)
+	require.NoError(t, err)
+
+	var fetched model.OidcClient
+	require.NoError(t, db.First(&fetched, "id = ?", client.ID).Error)
+	assert.Equal(t, model.DefaultAccessTokenDurationMinutes, fetched.AccessTokenDurationMinutes)
+	assert.Equal(t, model.DefaultRefreshTokenDurationMinutes, fetched.RefreshTokenDurationMinutes)
+
+	// Providing only one of them leaves the other at its default
+	input.AccessTokenDurationMinutes = 3 * 60
+	_, err = s.UpdateClient(t.Context(), client.ID, input)
+	require.NoError(t, err)
+
+	require.NoError(t, db.First(&fetched, "id = ?", client.ID).Error)
+	assert.Equal(t, int64(3*60), fetched.AccessTokenDurationMinutes)
+	assert.Equal(t, model.DefaultRefreshTokenDurationMinutes, fetched.RefreshTokenDurationMinutes)
+}
+
 func TestOidcService_CreateClientSecret_withCustomSecret(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
 
-	s, err := NewOidcService(db, nil, nil, nil, nil, nil)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	client := model.OidcClient{Name: "Test Client"}
@@ -512,28 +667,142 @@ func TestOidcService_CreateClientSecret_withCustomSecret(t *testing.T) {
 	require.NoError(t, err)
 
 	customSecret := "custom-client-secret-with-a-minimum-length"
-	input := dto.OidcClientSecretDto{Secret: customSecret}
+	input := dto.OidcClientSecretCreateDto{Secret: customSecret}
 
-	secret, err := s.CreateClientSecret(t.Context(), client.ID, input)
+	created, secret, err := s.CreateClientSecret(t.Context(), client.ID, input)
 	require.NoError(t, err)
 	assert.Equal(t, customSecret, secret)
+	assert.Equal(t, "cust", created.Prefix)
+	assert.Nil(t, created.ExpiresAt)
+	assert.True(t, created.IsActive())
 
 	var fetched model.OidcClient
 	err = db.First(&fetched, "id = ?", client.ID).Error
 	require.NoError(t, err)
-	require.NoError(t, bcrypt.CompareHashAndPassword([]byte(fetched.Secret), []byte(customSecret)))
+	require.Len(t, fetched.Credentials.Secrets, 1)
+	assert.Equal(t, created.ID, fetched.Credentials.Secrets[0].ID)
+	assert.Equal(t, model.OidcClientSecretHashSHA256, fetched.Credentials.Secrets[0].Algorithm)
+	assert.Equal(t, utils.CreateSha256Hash(customSecret), fetched.Credentials.Secrets[0].Hash)
+}
+
+func TestOidcService_CreateClientSecret_multipleSecrets(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{Name: "Test Client"}
+	err = db.Create(&client).Error
+	require.NoError(t, err)
+
+	// Adding a second secret leaves the first one in place
+	first, _, err := s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{})
+	require.NoError(t, err)
+	expiresAt := datatype.DateTime(time.Now().Add(24 * time.Hour))
+	second, _, err := s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{ExpiresAt: &expiresAt})
+	require.NoError(t, err)
+
+	secrets, err := s.ListClientSecrets(t.Context(), client.ID)
+	require.NoError(t, err)
+	require.Len(t, secrets, 2)
+	assert.Equal(t, first.ID, secrets[0].ID)
+	assert.Equal(t, second.ID, secrets[1].ID)
+	assert.Equal(t, expiresAt.ToTime().Unix(), secrets[1].ExpiresAt.ToTime().Unix())
+
+	// Deleting one secret keeps the other usable
+	err = s.DeleteClientSecret(t.Context(), client.ID, first.ID)
+	require.NoError(t, err)
+
+	secrets, err = s.ListClientSecrets(t.Context(), client.ID)
+	require.NoError(t, err)
+	require.Len(t, secrets, 1)
+	assert.Equal(t, second.ID, secrets[0].ID)
+
+	// Deleting an unknown secret is reported as not found
+	err = s.DeleteClientSecret(t.Context(), client.ID, first.ID)
+	require.Error(t, err)
+}
+
+func TestOidcService_CreateClientSecret_expirationInThePast(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{Name: "Test Client"}
+	err = db.Create(&client).Error
+	require.NoError(t, err)
+
+	expiresAt := datatype.DateTime(time.Now().Add(-time.Minute))
+	_, _, err = s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{ExpiresAt: &expiresAt})
+	require.Error(t, err)
+}
+
+func TestOidcService_CreateClientSecret_limit(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{Name: "Test Client"}
+	err = db.Create(&client).Error
+	require.NoError(t, err)
+
+	for range model.MaxOidcClientSecrets {
+		_, _, err = s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{})
+		require.NoError(t, err)
+	}
+
+	_, _, err = s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{})
+	require.Error(t, err)
+}
+
+func TestOidcService_CreateClientSecret_preservesFederatedIdentities(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{
+		Name:         "Test Client",
+		CallbackURLs: datatype.StringList{"https://example.com/callback"},
+		Credentials: model.OidcClientCredentials{
+			FederatedIdentities: []model.OidcClientFederatedIdentity{{Issuer: "https://issuer.example.com"}},
+		},
+	}
+	err = db.Create(&client).Error
+	require.NoError(t, err)
+
+	_, _, err = s.CreateClientSecret(t.Context(), client.ID, dto.OidcClientSecretCreateDto{})
+	require.NoError(t, err)
+
+	// Updating the client must not drop the secrets managed by the dedicated endpoints
+	_, err = s.UpdateClient(t.Context(), client.ID, dto.OidcClientUpdateDto{
+		Name:         "Test Client",
+		CallbackURLs: []string{"https://example.com/callback"},
+		Credentials: dto.OidcClientCredentialsDto{
+			FederatedIdentities: []dto.OidcClientFederatedIdentityDto{{Issuer: "https://other.example.com"}},
+		},
+	})
+	require.NoError(t, err)
+
+	var fetched model.OidcClient
+	require.NoError(t, db.First(&fetched, "id = ?", client.ID).Error)
+	require.Len(t, fetched.Credentials.Secrets, 1)
+	require.Len(t, fetched.Credentials.FederatedIdentities, 1)
+	assert.Equal(t, "https://other.example.com", fetched.Credentials.FederatedIdentities[0].Issuer)
 }
 
 func TestOidcService_UpdateClient_description(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
 
-	s, err := NewOidcService(db, nil, nil, nil, nil, nil)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	// Create a client without a description
 	client := model.OidcClient{
 		Name:         "Test Client",
-		CallbackURLs: model.UrlList{"https://example.com/callback"},
+		CallbackURLs: datatype.StringList{"https://example.com/callback"},
 	}
 	err = db.Create(&client).Error
 	require.NoError(t, err)
@@ -565,9 +834,112 @@ func TestOidcService_UpdateClient_description(t *testing.T) {
 	assert.Empty(t, fetched.Description)
 }
 
+func TestOidcService_UpdateClient_CIMDPreservesMetadataFields(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{
+		Name:               "Metadata Client",
+		CallbackURLs:       datatype.StringList{"https://metadata.example.com/callback"},
+		LogoutCallbackURLs: datatype.StringList{"https://metadata.example.com/logout"},
+		IsPublic:           true,
+		PkceEnabled:        true,
+		Credentials: model.OidcClientCredentials{
+			FederatedIdentities: []model.OidcClientFederatedIdentity{{
+				Issuer:  "https://metadata.example.com/client.json",
+				Subject: "https://metadata.example.com/client.json",
+				JWKS:    "https://metadata.example.com/jwks.json",
+			}},
+		},
+		ClientType: model.OidcClientTypeCIMD,
+	}
+	require.NoError(t, db.Create(&client).Error)
+
+	launchURL := "https://app.example.com"
+	accessDuration := int64(2 * 60)
+	refreshDuration := int64(7 * 24 * 60)
+	input := dto.OidcClientUpdateDto{
+		Name:                                "Overridden Client",
+		Description:                         "Locally managed description",
+		CallbackURLs:                        []string{"https://override.example.com/callback"},
+		LogoutCallbackURLs:                  []string{"https://override.example.com/logout"},
+		IsPublic:                            false,
+		PkceEnabled:                         false,
+		RequiresReauthentication:            true,
+		RequiresPushedAuthorizationRequests: true,
+		SkipConsent:                         true,
+		LaunchURL:                           &launchURL,
+		IsGroupRestricted:                   true,
+		AccessTokenDurationMinutes:          accessDuration,
+		RefreshTokenDurationMinutes:         refreshDuration,
+		Credentials: dto.OidcClientCredentialsDto{
+			FederatedIdentities: []dto.OidcClientFederatedIdentityDto{{
+				Issuer: "https://override.example.com",
+				JWKS:   "https://override.example.com/jwks.json",
+			}},
+		},
+	}
+
+	_, err = s.UpdateClient(t.Context(), client.ID, input)
+	require.NoError(t, err)
+
+	var fetched model.OidcClient
+	require.NoError(t, db.First(&fetched, "id = ?", client.ID).Error)
+	assert.Equal(t, client.Name, fetched.Name)
+	assert.Equal(t, client.CallbackURLs, fetched.CallbackURLs)
+	assert.Equal(t, client.LogoutCallbackURLs, fetched.LogoutCallbackURLs)
+	assert.Equal(t, client.IsPublic, fetched.IsPublic)
+	assert.Equal(t, client.PkceEnabled, fetched.PkceEnabled)
+	assert.Equal(t, client.Credentials, fetched.Credentials)
+	assert.Equal(t, input.Description, fetched.Description)
+	assert.Equal(t, input.RequiresReauthentication, fetched.RequiresReauthentication)
+	assert.Equal(t, input.RequiresPushedAuthorizationRequests, fetched.RequiresPushedAuthorizationRequests)
+	assert.Equal(t, input.SkipConsent, fetched.SkipConsent)
+	assert.Equal(t, input.LaunchURL, fetched.LaunchURL)
+	assert.Equal(t, input.IsGroupRestricted, fetched.IsGroupRestricted)
+	assert.Equal(t, accessDuration, fetched.AccessTokenDurationMinutes)
+	assert.Equal(t, refreshDuration, fetched.RefreshTokenDurationMinutes)
+}
+
+func TestOidcService_UpdateClient_CIMDDoesNotOverwriteConcurrentMetadataRefresh(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	client := model.OidcClient{
+		Name:         "Original metadata name",
+		CallbackURLs: datatype.StringList{"https://metadata.example.com/callback"},
+		ClientType:   model.OidcClientTypeCIMD,
+	}
+	require.NoError(t, db.Create(&client).Error)
+
+	// Simulate metadata refresh changing a document-owned column after the admin request read its snapshot
+	require.NoError(t, db.Exec(`
+		CREATE TRIGGER refresh_metadata_before_admin_update
+		BEFORE UPDATE OF description ON oidc_clients
+		BEGIN
+			UPDATE oidc_clients SET name = 'Refreshed metadata name' WHERE id = OLD.id;
+		END;
+	`).Error)
+
+	input := dto.OidcClientUpdateDto{
+		Description: "Locally managed description",
+	}
+	_, err = s.UpdateClient(t.Context(), client.ID, input)
+	require.NoError(t, err)
+
+	var fetched model.OidcClient
+	require.NoError(t, db.First(&fetched, "id = ?", client.ID).Error)
+	assert.Equal(t, "Refreshed metadata name", fetched.Name)
+	assert.Equal(t, input.Description, fetched.Description)
+}
+
 func TestOidcService_ListAccessibleOidcClients_requiresExplicitGroupPermission(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
-	s, err := NewOidcService(db, nil, nil, nil, nil, nil)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
 	require.NoError(t, err)
 
 	allowedGroup := model.UserGroup{Name: "allowed", FriendlyName: "Allowed"}
@@ -581,10 +953,10 @@ func TestOidcService_ListAccessibleOidcClients_requiresExplicitGroupPermission(t
 	require.NoError(t, db.Create(&userWithoutGroup).Error)
 
 	clients := []model.OidcClient{
-		{Name: "Unrestricted", CallbackURLs: model.UrlList{"https://unrestricted.example.com/callback"}},
-		{Name: "Restricted without groups", CallbackURLs: model.UrlList{"https://empty.example.com/callback"}, IsGroupRestricted: true},
-		{Name: "Restricted to user group", CallbackURLs: model.UrlList{"https://allowed.example.com/callback"}, IsGroupRestricted: true, AllowedUserGroups: []model.UserGroup{allowedGroup}},
-		{Name: "Restricted to other group", CallbackURLs: model.UrlList{"https://other.example.com/callback"}, IsGroupRestricted: true, AllowedUserGroups: []model.UserGroup{otherGroup}},
+		{Name: "Unrestricted", CallbackURLs: datatype.StringList{"https://unrestricted.example.com/callback"}},
+		{Name: "Restricted without groups", CallbackURLs: datatype.StringList{"https://empty.example.com/callback"}, IsGroupRestricted: true},
+		{Name: "Restricted to user group", CallbackURLs: datatype.StringList{"https://allowed.example.com/callback"}, IsGroupRestricted: true, AllowedUserGroups: []model.UserGroup{allowedGroup}},
+		{Name: "Restricted to other group", CallbackURLs: datatype.StringList{"https://other.example.com/callback"}, IsGroupRestricted: true, AllowedUserGroups: []model.UserGroup{otherGroup}},
 	}
 	for i := range clients {
 		require.NoError(t, db.Create(&clients[i]).Error)
@@ -597,6 +969,60 @@ func TestOidcService_ListAccessibleOidcClients_requiresExplicitGroupPermission(t
 	noGroupClients, _, err := s.ListAccessibleOidcClients(t.Context(), userWithoutGroup.ID, utils.ListRequestOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Unrestricted"}, accessibleClientNames(noGroupClients))
+}
+
+func TestOidcService_ListClientViewsFilterByLaunchURLPresence(t *testing.T) {
+	db := testutils.NewDatabaseForTest(t)
+	s, err := NewOidcService(db, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, err)
+
+	user := model.User{Username: "launch-url-filter"}
+	require.NoError(t, db.Create(&user).Error)
+
+	launchURL := "https://launchable.example.com"
+	emptyLaunchURL := ""
+	clients := []model.OidcClient{
+		{Name: "Launchable", LaunchURL: &launchURL},
+		{Name: "Missing launch URL"},
+		{Name: "Empty launch URL", LaunchURL: &emptyLaunchURL},
+	}
+	for i := range clients {
+		require.NoError(t, db.Create(&clients[i]).Error)
+		require.NoError(t, db.Create(&model.UserAuthorizedOidcClient{
+			UserID:   user.ID,
+			ClientID: clients[i].ID,
+		}).Error)
+	}
+
+	withLaunchURL := utils.ListRequestOptions{
+		Filters: map[string][]any{"hasLaunchURL": {true}},
+	}
+	withoutLaunchURL := utils.ListRequestOptions{
+		Filters: map[string][]any{"hasLaunchURL": {false}},
+	}
+
+	allClients, allClientsPagination, err := s.ListAccessibleOidcClients(t.Context(), user.ID, utils.ListRequestOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), allClientsPagination.TotalItems)
+	assert.ElementsMatch(t, []string{"Launchable", "Missing launch URL", "Empty launch URL"}, accessibleClientNames(allClients))
+
+	launchableClients, launchablePagination, err := s.ListAccessibleOidcClients(t.Context(), user.ID, withLaunchURL)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), launchablePagination.TotalItems)
+	assert.Equal(t, []string{"Launchable"}, accessibleClientNames(launchableClients))
+
+	allAuthorizations, allAuthorizationsPagination, err := s.ListAuthorizedClients(t.Context(), user.ID, utils.ListRequestOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), allAuthorizationsPagination.TotalItems)
+	assert.Len(t, allAuthorizations, 3)
+
+	hiddenAuthorizations, hiddenPagination, err := s.ListAuthorizedClients(t.Context(), user.ID, withoutLaunchURL)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), hiddenPagination.TotalItems)
+	assert.ElementsMatch(t, []string{"Missing launch URL", "Empty launch URL"}, []string{
+		hiddenAuthorizations[0].Client.Name,
+		hiddenAuthorizations[1].Client.Name,
+	})
 }
 
 func accessibleClientNames(clients []dto.AccessibleOidcClientDto) []string {

@@ -1,3 +1,97 @@
+## v2.14.0
+
+### Bug Fixes
+
+- improve validation of app config variables ([9e637d5](https://github.com/pocket-id/pocket-id/commit/9e637d5aec178adb757cfdc961236f92731c16f3) by @stonith404)
+- wrong loading indicator shown on device page ([2f43ce4](https://github.com/pocket-id/pocket-id/commit/2f43ce41fe2d19365585453aa1d6d1528c73bee6) by @stonith404)
+- ignore unsupported grant types in client ID metadata documents ([#1682](https://github.com/pocket-id/pocket-id/pull/1682) by @ItalyPaleAle)
+- don't show "show hidden apps" if none available ([03498e2](https://github.com/pocket-id/pocket-id/commit/03498e2f511eb91e1fea442be781b252828520c7) by @stonith404)
+- ignore trailing slash in resources ([9421d43](https://github.com/pocket-id/pocket-id/commit/9421d43f8ecab0f3d245d79196cb2f33818c8054) by @stonith404)
+- update de.json Translation ([#1699](https://github.com/pocket-id/pocket-id/pull/1699) by @tw-)
+- remove unnecessary information from oidc client details ([900346a](https://github.com/pocket-id/pocket-id/commit/900346a1c38b1d7b6d9897b7aa3cb9182f7dafed) by @stonith404)
+
+### Documentation
+
+- change logo image in README.md ([76f6b24](https://github.com/pocket-id/pocket-id/commit/76f6b249f26fb8d8b3215f519c6d39a311415606) by @stonith404)
+- add error responses to openapi spec ([#1684](https://github.com/pocket-id/pocket-id/pull/1684) by @aclerici38)
+
+### Features
+
+- add animated logo as default logo ([0c9a03e](https://github.com/pocket-id/pocket-id/commit/0c9a03e5193b52ff752134f7df39a24fae19dae2) by @stonith404)
+- hide apps without launch url on My Apps page ([3ca9a55](https://github.com/pocket-id/pocket-id/commit/3ca9a55c7135d785bc6089fa33dc6d8287fd3f59) by @stonith404)
+- support multiple client secrets per OIDC client ([#1679](https://github.com/pocket-id/pocket-id/pull/1679) by @ItalyPaleAle)
+- serve RFC 8414 authorization server metadata ([#1685](https://github.com/pocket-id/pocket-id/pull/1685) by @jfroy)
+- allow admins to auto grant APIs to CIMD clients ([#1692](https://github.com/pocket-id/pocket-id/pull/1692) by @stonith404)
+- improve tooltip design ([6a441b1](https://github.com/pocket-id/pocket-id/commit/6a441b1f9b139b41f33e70e06f4eb2ae7303cb28) by @stonith404)
+- reduce one time access code length for better UX ([a487c78](https://github.com/pocket-id/pocket-id/commit/a487c7855056b126b7b109f30ba7452c4539b04e) by @stonith404)
+
+### Other
+
+- Bump the "all-dependencies" group with 3 updates across multiple ecosystems ([#1668](https://github.com/pocket-id/pocket-id/pull/1668) by @dependabot[bot])
+- update francis to beta 21 ([#1669](https://github.com/pocket-id/pocket-id/pull/1669) by @ItalyPaleAle)
+- migrate LDAP sync to an actor ([#1651](https://github.com/pocket-id/pocket-id/pull/1651) by @ItalyPaleAle)
+- bump pnpm to v11.20.0 ([#1670](https://github.com/pocket-id/pocket-id/pull/1670) by @kmendell)
+- remove unnecessary curl dependency from Dockerfile ([987d1a8](https://github.com/pocket-id/pocket-id/commit/987d1a8b599eadaad32a4c68c9bcf25f12eeab2f) by @stonith404)
+- update Francis to beta 22 ([#1676](https://github.com/pocket-id/pocket-id/pull/1676) by @ItalyPaleAle)
+- update AAGUIDs ([#1678](https://github.com/pocket-id/pocket-id/pull/1678) by @github-actions[bot])
+- move `iss` param handling to Fosite ([1bb21c5](https://github.com/pocket-id/pocket-id/commit/1bb21c5d73d6942a9c6959f8be4e7fbe93e2eb29) by @stonith404)
+- fix flaky update application image e2e test ([#1690](https://github.com/pocket-id/pocket-id/pull/1690) by @ItalyPaleAle)
+- move API key cleanup job to actor ([#1687](https://github.com/pocket-id/pocket-id/pull/1687) by @ItalyPaleAle)
+- Bump the "all-dependencies" group with 4 updates across multiple ecosystems ([#1693](https://github.com/pocket-id/pocket-id/pull/1693) by @dependabot[bot])
+- use fix version for `github.com/italypaleale/go-kit` ([07580d9](https://github.com/pocket-id/pocket-id/commit/07580d9f9fc2ac457da7a7ba3d325068afffc6f2) by @stonith404)
+- update AAGUIDs ([#1696](https://github.com/pocket-id/pocket-id/pull/1696) by @github-actions[bot])
+- move remaining database cleanup jobs to actors ([#1698](https://github.com/pocket-id/pocket-id/pull/1698) by @ItalyPaleAle)
+- migrate SCIM sync to actor + add tests ([#1680](https://github.com/pocket-id/pocket-id/pull/1680) by @ItalyPaleAle)
+
+**Full Changelog**: https://github.com/pocket-id/pocket-id/compare/v2.13.0...v2.14.0
+
+## v2.13.0
+
+### Bug Fixes
+
+- retry qr code login polling for known transient gateway responses ([7039692](https://github.com/pocket-id/pocket-id/commit/703969278be2a6b2cae30ca89dba4b73b0c969fa) by @stonith404)
+- decrease QR code login session duration to 5 minutes ([e35be30](https://github.com/pocket-id/pocket-id/commit/e35be309a3d40064617ef0ad557476c93ba983a9) by @stonith404)
+- show more user-friendly error message if QR code has expired ([27199f6](https://github.com/pocket-id/pocket-id/commit/27199f61d4adaeca463db68980dae6c2a885c5b4) by @stonith404)
+- one-time-access-token CLI fails with "RuntimePSKs is required" ([#1637](https://github.com/pocket-id/pocket-id/pull/1637) by @salcatroppa)
+- session revoke fails if orphaned session tokens exist ([598895e](https://github.com/pocket-id/pocket-id/commit/598895e7c53df28598d578896f6396241e9e9ef7) by @stonith404)
+- disable api key auth for webauthn register endpoints ([db64b15](https://github.com/pocket-id/pocket-id/commit/db64b150be9046ee971f520b4c30f3b3d434facf) by @stonith404)
+- explicitly set SameSite to Lax for cookies ([69d55ad](https://github.com/pocket-id/pocket-id/commit/69d55ada6c695c47f764285ca9e94736e50a8103) by @stonith404)
+- explicitly require JSON for request bodies ([1238bf0](https://github.com/pocket-id/pocket-id/commit/1238bf0f378340d101c90295990b514131b10fe7) by @stonith404)
+- don't rely on content length header for optional json binding ([2c7d1b6](https://github.com/pocket-id/pocket-id/commit/2c7d1b63e1a366718d0c1951475e791922bb2445) by @stonith404)
+- respect log level in HTTP request logs ([488c50e](https://github.com/pocket-id/pocket-id/commit/488c50ef95e3e88f3a0085a67b399819a4647c7f) by @stonith404)
+- don't skip rate limits for loopback addresses ([140b5d3](https://github.com/pocket-id/pocket-id/commit/140b5d3cb440ccc7a30a3a1c9aae2f7a9d5efb4a) by @stonith404)
+- make OIDC client token lifetimes optional ([#1650](https://github.com/pocket-id/pocket-id/pull/1650) by @ItalyPaleAle)
+- in non-HA mode, increase AlarmLeaseDuration ([#1660](https://github.com/pocket-id/pocket-id/pull/1660) by @ItalyPaleAle)
+- separate TLS inputs and preserve certificate reloads ([#1653](https://github.com/pocket-id/pocket-id/pull/1653) by @stonith404)
+- brotli compression ignored ([#1661](https://github.com/pocket-id/pocket-id/pull/1661) by @stonith404)
+- align last signed in text left ([c87012a](https://github.com/pocket-id/pocket-id/commit/c87012ae01cb9e85ab305fffc40347297eff6ffb) by @stonith404)
+
+### Features
+
+- make oauth access tokens RFC 9068 compliant ([7c55bdf](https://github.com/pocket-id/pocket-id/commit/7c55bdf115fc5b7fea89ef5cd3c79dc926ddf5ac) by @stonith404)
+- implement OAuth Client ID Metadata Document ([#1526](https://github.com/pocket-id/pocket-id/pull/1526) by @jfroy)
+- add ability to customize session duration of clients ([#1641](https://github.com/pocket-id/pocket-id/pull/1641) by @stonith404)
+- add observability to actors ([#1646](https://github.com/pocket-id/pocket-id/pull/1646) by @ItalyPaleAle)
+- include Francis data in Pocket ID backups ([#1645](https://github.com/pocket-id/pocket-id/pull/1645) by @ItalyPaleAle)
+- add settings for limiting what passkeys can be used ([#1662](https://github.com/pocket-id/pocket-id/pull/1662) by @stonith404)
+
+### Other
+
+- preserve tab indentation for package.json in release script ([a1ebf4e](https://github.com/pocket-id/pocket-id/commit/a1ebf4e98b65fa465f99bfa2fb9694a903076a32) by @stonith404)
+- Bump the "all-dependencies" group with 3 updates across multiple ecosystems ([#1639](https://github.com/pocket-id/pocket-id/pull/1639) by @dependabot[bot])
+- use paraglide markup instead of custom implementation ([b08ac7b](https://github.com/pocket-id/pocket-id/commit/b08ac7bf7de04872a83913db19fc6392ecf7bd96) by @stonith404)
+- fix wrong database version in `database.json` ([281bea5](https://github.com/pocket-id/pocket-id/commit/281bea54d351128e29bb2e54455a7cb2e619554a) by @stonith404)
+- standardize API error handling ([#1635](https://github.com/pocket-id/pocket-id/pull/1635) by @stonith404)
+- add deepsec to gitignore ([e3e0ddc](https://github.com/pocket-id/pocket-id/commit/e3e0ddc192d01de35b8f907144ac66b6b2963ac0) by @stonith404)
+- upgrade vulnerable dependencies ([9320144](https://github.com/pocket-id/pocket-id/commit/9320144991fa0f9f6c1419af0c78c7e2395dc61e) by @stonith404)
+- remove unused curl dependency from Dockerfile ([98160b2](https://github.com/pocket-id/pocket-id/commit/98160b20a15056535bf12d357b7d97c63a165cd0) by @stonith404)
+- remove invalid unit test ([95809dd](https://github.com/pocket-id/pocket-id/commit/95809dd29cea92e30f54c34876305f7a27a595bd) by @stonith404)
+- use smaller francis.bin ([4fe6f06](https://github.com/pocket-id/pocket-id/commit/4fe6f0688c2760abfe35558ffc9126f3a1e9edc0) by @stonith404)
+- move GeoLite to its own package ([#1647](https://github.com/pocket-id/pocket-id/pull/1647) by @ItalyPaleAle)
+- fix formatting ([#1666](https://github.com/pocket-id/pocket-id/pull/1666) by @Copilot)
+
+**Full Changelog**: https://github.com/pocket-id/pocket-id/compare/v2.12.0...v2.13.0
+
 ## v2.12.0
 
 ### Bug Fixes

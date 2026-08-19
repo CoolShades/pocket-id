@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
@@ -30,6 +31,7 @@ type Service struct {
 	userCreator  UserCreator
 	signer       TokenService
 	auditLog     AuditLogger
+	scimSync     ScimSyncScheduler
 }
 
 func newService(deps Dependencies, actorService *actor.Service) *Service {
@@ -39,6 +41,7 @@ func newService(deps Dependencies, actorService *actor.Service) *Service {
 		userCreator:  deps.UserCreator,
 		signer:       deps.Signer,
 		auditLog:     deps.AuditLog,
+		scimSync:     deps.ScimSync,
 	}
 }
 
@@ -46,7 +49,7 @@ func (s *Service) SignUp(ctx context.Context, config *appconfig.AppConfigModel, 
 	tokenProvided := signupData.Token != ""
 
 	if config.AllowUserSignups.String() != "open" && !tokenProvided {
-		return model.User{}, "", &common.OpenSignupDisabledError{}
+		return model.User{}, "", apperror.OpenSignupDisabled()
 	}
 
 	var userGroupIDs []string
@@ -65,7 +68,7 @@ func (s *Service) SignUp(ctx context.Context, config *appconfig.AppConfigModel, 
 		}
 
 		if consumeRes.Status != signupTokenConsumeOK {
-			return model.User{}, "", &common.TokenInvalidOrExpiredError{}
+			return model.User{}, "", apperror.TokenInvalidOrExpired()
 		}
 		userGroupIDs = consumeRes.UserGroupIDs
 	}
@@ -125,6 +128,9 @@ func (s *Service) createSignedUpUser(ctx context.Context, config *appconfig.AppC
 	if err != nil {
 		return model.User{}, "", err
 	}
+	if s.scimSync != nil {
+		s.scimSync.ScheduleSync(ctx)
+	}
 
 	return user, accessToken, nil
 }
@@ -160,7 +166,7 @@ func (s *Service) SignUpInitialAdmin(ctx context.Context, config *appconfig.AppC
 		return model.User{}, "", err
 	}
 	if setupCompleted {
-		return model.User{}, "", &common.SetupNotAvailableError{}
+		return model.User{}, "", apperror.SetupAlreadyCompleted()
 	}
 
 	// Build the first user with administrator privileges
@@ -187,6 +193,9 @@ func (s *Service) SignUpInitialAdmin(ctx context.Context, config *appconfig.AppC
 	err = tx.Commit().Error
 	if err != nil {
 		return model.User{}, "", err
+	}
+	if s.scimSync != nil {
+		s.scimSync.ScheduleSync(ctx)
 	}
 
 	return user, token, nil

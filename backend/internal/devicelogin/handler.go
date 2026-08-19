@@ -7,17 +7,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/cookie"
 )
 
 type handler struct {
 	service   *Service
 	baseURL   string
-	appConfig AppConfigProvider
+	appConfig appconfig.AppConfigResolver
 }
 
-func newHandler(service *Service, baseURL string, appConfig AppConfigProvider) *handler {
+func newHandler(service *Service, baseURL string, appConfig appconfig.AppConfigResolver) *handler {
 	return &handler{
 		service:   service,
 		baseURL:   baseURL,
@@ -32,11 +34,10 @@ func newHandler(service *Service, baseURL string, appConfig AppConfigProvider) *
 // @Produce json
 // @Success 201 {object} requestCreateDto "Created device login request"
 // @Router /api/device-login/requests [post]
-func (h *handler) createRequest(c *gin.Context) {
+func (h *handler) createRequest(c *gin.Context) error {
 	request, deviceToken, err := h.service.Create(c.Request.Context(), c.ClientIP(), c.Request.UserAgent())
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	verificationURI := h.baseURL + "/device"
@@ -50,6 +51,7 @@ func (h *handler) createRequest(c *gin.Context) {
 		ExpiresAt:               request.ExpiresAt,
 		Interval:                PollingInterval,
 	})
+	return nil
 }
 
 // exchangeRequest godoc
@@ -61,11 +63,10 @@ func (h *handler) createRequest(c *gin.Context) {
 // @Success 200 {object} dto.UserDto "Approved request exchanged for a user session"
 // @Success 202 "Authorization pending"
 // @Router /api/device-login/requests/{id}/exchange [post]
-func (h *handler) exchangeRequest(c *gin.Context) {
+func (h *handler) exchangeRequest(c *gin.Context) error {
 	dbConfig, err := h.appConfig.GetConfig(c.Request.Context())
 	if err != nil {
-		_ = c.Error(fmt.Errorf("error loading app configuration: %w", err))
-		return
+		return fmt.Errorf("error loading app configuration: %w", err)
 	}
 
 	requestID := c.Param("id")
@@ -76,20 +77,20 @@ func (h *handler) exchangeRequest(c *gin.Context) {
 		if c.Request.Context().Err() != nil {
 			// Context canceled = the client stopped the request
 			// Nothing to do here
-			return
+			return c.Request.Context().Err()
 		}
-		_ = c.Error(err)
-		return
+		return err
 	}
 	if status == RequestStatusPending {
 		// Request is pending, so respond with a 202
 		c.Status(http.StatusAccepted)
-		return
+		return nil
 	}
 
 	maxAge := int(sessionDuration.Seconds())
 	cookie.AddAccessTokenCookie(c, maxAge, accessToken)
 	c.JSON(http.StatusOK, dto.UserDto(user))
+	return nil
 }
 
 // inspectRequest godoc
@@ -101,21 +102,20 @@ func (h *handler) exchangeRequest(c *gin.Context) {
 // @Param request body verificationDto true "Device login code"
 // @Success 200 {object} verificationInfoDto "Device login request details"
 // @Router /api/device-login/verification [post]
-func (h *handler) inspectRequest(c *gin.Context) {
+func (h *handler) inspectRequest(c *gin.Context) error {
 	var input verificationDto
-	err := c.ShouldBindJSON(&input)
+	err := httpserver.BindJSON(c, &input)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	info, err := h.service.Inspect(c.Request.Context(), input.Code)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	c.JSON(http.StatusOK, verificationInfoDto(info))
+	return nil
 }
 
 // decideRequest godoc
@@ -126,20 +126,19 @@ func (h *handler) inspectRequest(c *gin.Context) {
 // @Param decision body decisionDto true "Device login decision"
 // @Success 204 "No Content"
 // @Router /api/device-login/verification/decision [post]
-func (h *handler) decideRequest(c *gin.Context) {
+func (h *handler) decideRequest(c *gin.Context) error {
 	var input decisionDto
-	err := c.ShouldBindJSON(&input)
+	err := httpserver.BindJSON(c, &input)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	reauthenticationToken, _ := c.Cookie(cookie.ReauthenticationTokenCookieName)
 	err = h.service.Decide(c.Request.Context(), input.Code, input.Decision, c.GetString("userID"), reauthenticationToken)
 	if err != nil {
-		_ = c.Error(err)
-		return
+		return err
 	}
 
 	c.Status(http.StatusNoContent)
+	return nil
 }
