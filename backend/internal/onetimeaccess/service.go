@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
@@ -20,7 +21,11 @@ import (
 
 // authenticationMethodOneTimePassword identifies one-time password/code authentication
 // It must match the value emitted by the JWT service in the access token's "amr" claim
-const authenticationMethodOneTimePassword = "otp"
+const (
+	authenticationMethodOneTimePassword = "otp"
+	shortTokenLength                    = 6
+	longTokenLength                     = 12
+)
 
 // TokenStore is the minimal interface needed to persist a one-time access token in the actor state store.
 // It's satisfied by both *actor.Service (used by the running application) and *local.Host (used by CLI commands, which don't run the full actor host).
@@ -50,7 +55,7 @@ func newService(deps Dependencies, actorService *actor.Service) *Service {
 
 func (s *Service) RequestOneTimeAccessEmailAsAdmin(ctx context.Context, dbConfig *appconfig.AppConfigModel, userID string, ttl time.Duration) error {
 	if !dbConfig.EmailOneTimeAccessAsAdminEnabled.IsTrue() {
-		return &common.OneTimeAccessDisabledError{}
+		return apperror.OneTimeAccessDisabled()
 	}
 
 	_, err := s.requestOneTimeAccessEmailInternal(ctx, userID, "", ttl, false, dbConfig)
@@ -59,7 +64,7 @@ func (s *Service) RequestOneTimeAccessEmailAsAdmin(ctx context.Context, dbConfig
 
 func (s *Service) RequestOneTimeAccessEmailAsUnauthenticatedUser(ctx context.Context, dbConfig *appconfig.AppConfigModel, userID, redirectPath string) (string, error) {
 	if !dbConfig.EmailOneTimeAccessAsUnauthenticatedEnabled.IsTrue() {
-		return "", &common.OneTimeAccessDisabledError{}
+		return "", apperror.OneTimeAccessDisabled()
 	}
 
 	var userId string
@@ -89,7 +94,7 @@ func (s *Service) requestOneTimeAccessEmailInternal(ctx context.Context, userID,
 	}
 
 	if user.Email == nil {
-		return nil, &common.UserEmailNotSetError{}
+		return nil, apperror.UserEmailNotSet()
 	}
 
 	oneTimeAccessToken, deviceToken, err := StoreToken(ctx, s.actorService, user.ID, ttl, withDeviceToken)
@@ -134,7 +139,7 @@ func (s *Service) CreateToken(ctx context.Context, userID string, ttl time.Durat
 	// Load the user to ensure it exists
 	_, err = s.userProvider.GetUser(ctx, userID)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", &common.UserNotFoundError{}
+		return "", apperror.UserNotFound()
 	} else if err != nil {
 		return "", err
 	}
@@ -167,9 +172,9 @@ func (s *Service) ExchangeToken(ctx context.Context, dbConfig *appconfig.AppConf
 
 	switch consumeRes.Status {
 	case tokenConsumeNotFound:
-		return model.User{}, "", &common.TokenInvalidOrExpiredError{}
+		return model.User{}, "", apperror.TokenInvalidOrExpired()
 	case tokenConsumeDeviceMismatch:
-		return model.User{}, "", &common.DeviceCodeInvalid{}
+		return model.User{}, "", apperror.DeviceCodeInvalid()
 	case tokenConsumeOK:
 		// All good, continue below
 	default:
@@ -195,13 +200,13 @@ func (s *Service) completeTokenExchange(ctx context.Context, dbConfig *appconfig
 		First(&user).
 		Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return model.User{}, "", &common.TokenInvalidOrExpiredError{}
+		return model.User{}, "", apperror.TokenInvalidOrExpired()
 	} else if err != nil {
 		return model.User{}, "", err
 	}
 
 	if user.Disabled {
-		return model.User{}, "", &common.UserDisabledError{}
+		return model.User{}, "", apperror.UserDisabled()
 	}
 
 	accessToken, err := s.signer.GenerateAccessToken(
@@ -262,10 +267,10 @@ func StoreToken(ctx context.Context, store TokenStore, userID string, ttl time.D
 
 // generateToken generates the random token value (and optional device token) for a one-time access token.
 func generateToken(ttl time.Duration, withDeviceToken bool) (token string, deviceToken *string, err error) {
-	// If expires at is less than 15 minutes, use a 6-character token instead of 16
-	tokenLength := 16
+	// Use the shorter format only for codes that expire within 15 minutes
+	tokenLength := longTokenLength
 	if ttl <= 15*time.Minute {
-		tokenLength = 6
+		tokenLength = shortTokenLength
 	}
 
 	token, err = utils.GenerateRandomUnambiguousString(tokenLength)
