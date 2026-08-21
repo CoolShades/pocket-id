@@ -5,7 +5,6 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as InputOTP from '$lib/components/ui/input-otp';
-	import { Spinner } from '$lib/components/ui/spinner';
 	import { m } from '$lib/paraglide/messages';
 	import DeviceLoginService from '$lib/services/device-login-service';
 	import OIDCService from '$lib/services/oidc-service';
@@ -14,6 +13,7 @@
 	import userStore from '$lib/stores/user-store';
 	import type { DeviceLoginVerificationInfo } from '$lib/types/device-login.type';
 	import type { OidcDeviceCodeInfo } from '$lib/types/oidc.type';
+	import { getClientIDHost } from '$lib/utils/client-id-util';
 	import { getWebauthnErrorMessage } from '$lib/utils/error-util';
 	import { preventDefault } from '$lib/utils/event-util';
 	import { startAuthentication } from '@simplewebauthn/browser';
@@ -136,7 +136,9 @@
 
 	function retry() {
 		errorMessage = null;
-		userCode = '';
+		if (!deviceLoginInfo) {
+			userCode = '';
+		}
 		if (!deviceLoginInfo) {
 			deviceInfo = undefined;
 			authorizationRequired = false;
@@ -209,7 +211,7 @@
 			<FormattedMessage
 				message={m.do_you_want_to_sign_in_to_client_with_your_app_name_account}
 				inputs={{
-					client: deviceInfo.client.name,
+					client: getClientIDHost(deviceInfo!.client) ?? deviceInfo!.client.name,
 					appName: $appConfigStore.appName
 				}}
 			/>
@@ -221,9 +223,7 @@
 					<Card.Description class="text-start">
 						<FormattedMessage
 							message={m.client_wants_to_access_the_following_information}
-							inputs={{
-								client: deviceInfo!.client.name
-							}}
+							inputs={{ client: getClientIDHost(deviceInfo!.client) ?? deviceInfo!.client.name }}
 						/>
 					</Card.Description>
 				</Card.Header>
@@ -273,12 +273,17 @@
 					class="flex-1"
 					variant="secondary"
 					disabled={isLoading}
+					isLoading={deviceLoginDecision === 'deny'}
 					onclick={() => decideDeviceLogin('deny')}
 				>
-					{#if deviceLoginDecision === 'deny'}<Spinner data-icon="inline-start" />{/if}
 					{m.deny()}
 				</Button>
-				<Button class="flex-1" {isLoading} onclick={() => decideDeviceLogin('approve')}>
+				<Button
+					class="flex-1"
+					disabled={isLoading}
+					isLoading={deviceLoginDecision === 'approve'}
+					onclick={() => decideDeviceLogin('approve')}
+				>
 					{m.approve()}
 				</Button>
 			{:else}

@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
@@ -32,18 +32,18 @@ type UserService struct {
 	auditLogService    *AuditLogService
 	customClaimService *CustomClaimService
 	appImagesService   *AppImagesService
-	scimService        *ScimService
+	scimSyncScheduler  ScimSyncScheduler
 	fileStorage        storage.FileStorage
 }
 
-func NewUserService(db *gorm.DB, jwtService *JwtService, auditLogService *AuditLogService, customClaimService *CustomClaimService, appImagesService *AppImagesService, scimService *ScimService, fileStorage storage.FileStorage) *UserService {
+func NewUserService(db *gorm.DB, jwtService *JwtService, auditLogService *AuditLogService, customClaimService *CustomClaimService, appImagesService *AppImagesService, scimSyncScheduler ScimSyncScheduler, fileStorage storage.FileStorage) *UserService {
 	return &UserService{
 		db:                 db,
 		jwtService:         jwtService,
 		auditLogService:    auditLogService,
 		customClaimService: customClaimService,
 		appImagesService:   appImagesService,
-		scimService:        scimService,
+		scimSyncScheduler:  scimSyncScheduler,
 		fileStorage:        fileStorage,
 	}
 }
@@ -80,13 +80,16 @@ func (s *UserService) getUserInternal(ctx context.Context, userID string, tx *go
 		Where("id = ?", userID).
 		First(&user).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.User{}, apperror.UserNotFound()
+	}
 	return user, err
 }
 
 func (s *UserService) GetProfilePicture(ctx context.Context, userID string) (io.ReadCloser, int64, error) {
 	// Validate the user ID to prevent directory traversal
 	if err := uuid.Validate(userID); err != nil {
-		return nil, 0, &common.InvalidUUIDError{}
+		return nil, 0, apperror.InvalidUserID()
 	}
 
 	user, err := s.GetUser(ctx, userID)
@@ -110,7 +113,7 @@ func (s *UserService) GetProfilePicture(ctx context.Context, userID string) (io.
 		if err == nil {
 			return reader, size, nil
 		}
-		if !errors.Is(err, &common.ImageNotFoundError{}) {
+		if !apperror.IsCode(err, apperror.CodeImageNotFound) {
 			return nil, 0, err
 		}
 	}
@@ -153,6 +156,9 @@ func (s *UserService) GetUserGroups(ctx context.Context, userID string) ([]model
 		Where("id = ?", userID).
 		First(&user).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, apperror.UserNotFound()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -163,11 +169,18 @@ func (s *UserService) UpdateProfilePicture(ctx context.Context, userID string, f
 	// Validate the user ID to prevent directory traversal
 	err := uuid.Validate(userID)
 	if err != nil {
-		return &common.InvalidUUIDError{}
+		return apperror.InvalidUserID()
+	}
+
+	if _, err := s.GetUser(ctx, userID); err != nil {
+		return err
 	}
 
 	// Convert the image to a smaller square image
 	profilePicture, err := profilepicture.CreateProfilePicture(file)
+	if errors.Is(err, profilepicture.ErrInvalidImage) {
+		return apperror.InvalidImage(err)
+	}
 	if err != nil {
 		return err
 	}
@@ -183,10 +196,13 @@ func (s *UserService) UpdateProfilePicture(ctx context.Context, userID string, f
 
 func (s *UserService) DeleteUser(ctx context.Context, dbConfig *appconfig.AppConfigModel, userID string, allowLdapDelete bool) error {
 	err := s.db.Transaction(func(tx *gorm.DB) error {
-		return s.deleteUserInternal(ctx, tx, userID, allowLdapDelete, dbConfig)
+		return s.DeleteUserInternal(ctx, dbConfig, tx, userID, allowLdapDelete)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete user '%s': %w", userID, err)
+	}
+	if s.scimSyncScheduler != nil {
+		s.scimSyncScheduler.ScheduleSync(ctx)
 	}
 
 	// Storage operations must be executed outside of a transaction
@@ -199,7 +215,10 @@ func (s *UserService) DeleteUser(ctx context.Context, dbConfig *appconfig.AppCon
 	return nil
 }
 
-func (s *UserService) deleteUserInternal(ctx context.Context, tx *gorm.DB, userID string, allowLdapDelete bool, cfg *appconfig.AppConfigModel) error {
+// DeleteUserInternal deletes a user within an existing transaction
+// It's exported for the LDAP sync, which deletes users that are no longer in the directory
+// Note that the caller is responsible for removing the user's profile picture from the storage layer, which must happen outside of the transaction
+func (s *UserService) DeleteUserInternal(ctx context.Context, cfg *appconfig.AppConfigModel, tx *gorm.DB, userID string, allowLdapDelete bool) error {
 	var user model.User
 	err := tx.
 		WithContext(ctx).
@@ -207,6 +226,9 @@ func (s *UserService) deleteUserInternal(ctx context.Context, tx *gorm.DB, userI
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&user).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return apperror.UserNotFound()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to load user to delete: %w", err)
 	}
@@ -214,17 +236,13 @@ func (s *UserService) deleteUserInternal(ctx context.Context, tx *gorm.DB, userI
 	// Disallow deleting the user if it is an LDAP user, LDAP is enabled, and the user is not disabled
 	if !allowLdapDelete && !user.Disabled && user.LdapID != nil {
 		if cfg.LdapEnabled.IsTrue() {
-			return &common.LdapUserUpdateError{}
+			return apperror.LdapUserUpdate()
 		}
 	}
 
 	err = tx.WithContext(ctx).Delete(&user).Error
 	if err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
-	}
-
-	if s.scimService != nil {
-		s.scimService.ScheduleSync()
 	}
 
 	return nil
@@ -245,6 +263,9 @@ func (s *UserService) CreateUser(ctx context.Context, dbConfig *appconfig.AppCon
 	if err != nil {
 		return model.User{}, err
 	}
+	if s.scimSyncScheduler != nil {
+		s.scimSyncScheduler.ScheduleSync(ctx)
+	}
 
 	return user, nil
 }
@@ -255,7 +276,7 @@ func (s *UserService) CreateUserInternal(ctx context.Context, dbConfig *appconfi
 
 func (s *UserService) createUserInternal(ctx context.Context, input dto.UserCreateDto, isLdapSync bool, tx *gorm.DB, cfg *appconfig.AppConfigModel) (model.User, error) {
 	if cfg.RequireUserEmail.IsTrue() && input.Email == nil {
-		return model.User{}, &common.UserEmailNotSetError{}
+		return model.User{}, apperror.MissingField("email")
 	}
 
 	var userGroups []model.UserGroup
@@ -308,7 +329,7 @@ func (s *UserService) createUserInternal(ctx context.Context, input dto.UserCrea
 	// Bump the UpdatedAt timestamp of the groups the new user was added to
 	// This is necessary for SCIM to work with the newly-created user, or groups may not be synced via SCIM
 	if len(userGroups) > 0 {
-		err = s.touchUserGroups(ctx, tx, groupIDs(userGroups))
+		err = s.touchUserGroups(ctx, tx, userGroupIDs(userGroups))
 		if err != nil {
 			return model.User{}, err
 		}
@@ -329,11 +350,16 @@ func (s *UserService) createUserInternal(ctx context.Context, input dto.UserCrea
 		}
 	}
 
-	if s.scimService != nil {
-		s.scimService.ScheduleSync()
+	return user, nil
+}
+
+func userGroupIDs(groups []model.UserGroup) []string {
+	ids := make([]string, len(groups))
+	for i, group := range groups {
+		ids[i] = group.ID
 	}
 
-	return user, nil
+	return ids
 }
 
 func (s *UserService) applyDefaultGroups(ctx context.Context, user *model.User, tx *gorm.DB, cfg *appconfig.AppConfigModel) error {
@@ -423,7 +449,7 @@ func (s *UserService) UpdateUser(ctx context.Context, cfg *appconfig.AppConfigMo
 		tx.Rollback()
 	}()
 
-	user, err := s.updateUserInternal(ctx, userID, updatedUser, updateOwnUser, isLdapSync, tx, cfg)
+	user, err := s.UpdateUserInternal(ctx, cfg, userID, updatedUser, updateOwnUser, isLdapSync, tx)
 	if err != nil {
 		return model.User{}, err
 	}
@@ -432,13 +458,18 @@ func (s *UserService) UpdateUser(ctx context.Context, cfg *appconfig.AppConfigMo
 	if err != nil {
 		return model.User{}, err
 	}
+	if s.scimSyncScheduler != nil {
+		s.scimSyncScheduler.ScheduleSync(ctx)
+	}
 
 	return user, nil
 }
 
-func (s *UserService) updateUserInternal(ctx context.Context, userID string, updatedUser dto.UserCreateDto, updateOwnUser bool, isLdapSync bool, tx *gorm.DB, cfg *appconfig.AppConfigModel) (model.User, error) {
+// UpdateUserInternal updates a user within an existing transaction
+// It's exported for the LDAP sync, which reconciles users and groups in a single transaction of its own
+func (s *UserService) UpdateUserInternal(ctx context.Context, cfg *appconfig.AppConfigModel, userID string, updatedUser dto.UserCreateDto, updateOwnUser bool, isLdapSync bool, tx *gorm.DB) (model.User, error) {
 	if cfg.RequireUserEmail.IsTrue() && updatedUser.Email == nil {
-		return model.User{}, &common.UserEmailNotSetError{}
+		return model.User{}, apperror.MissingField("email")
 	}
 
 	var user model.User
@@ -448,6 +479,9 @@ func (s *UserService) updateUserInternal(ctx context.Context, userID string, upd
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		First(&user).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return model.User{}, apperror.UserNotFound()
+	}
 	if err != nil {
 		return model.User{}, err
 	}
@@ -504,10 +538,6 @@ func (s *UserService) updateUserInternal(ctx context.Context, userID string, upd
 		return user, err
 	} else if err != nil {
 		return user, err
-	}
-
-	if s.scimService != nil {
-		s.scimService.ScheduleSync()
 	}
 
 	return user, nil
@@ -568,8 +598,8 @@ func (s *UserService) UpdateUserGroups(ctx context.Context, id string, userGroup
 		return model.User{}, err
 	}
 
-	if s.scimService != nil {
-		s.scimService.ScheduleSync()
+	if s.scimSyncScheduler != nil {
+		s.scimSyncScheduler.ScheduleSync(ctx)
 	}
 
 	return user, nil
@@ -588,7 +618,7 @@ func (s *UserService) checkDuplicatedFields(ctx context.Context, user model.User
 		return err
 	}
 	if result.Found {
-		return &common.AlreadyInUseError{Property: "email"}
+		return apperror.AlreadyInUse("email")
 	}
 
 	err = tx.
@@ -600,7 +630,7 @@ func (s *UserService) checkDuplicatedFields(ctx context.Context, user model.User
 		return err
 	}
 	if result.Found {
-		return &common.AlreadyInUseError{Property: "username"}
+		return apperror.AlreadyInUse("username")
 	}
 
 	return nil
@@ -610,7 +640,11 @@ func (s *UserService) checkDuplicatedFields(ctx context.Context, user model.User
 func (s *UserService) ResetProfilePicture(ctx context.Context, userID string) error {
 	// Validate the user ID to prevent directory traversal
 	if err := uuid.Validate(userID); err != nil {
-		return &common.InvalidUUIDError{}
+		return apperror.InvalidUserID()
+	}
+
+	if _, err := s.GetUser(ctx, userID); err != nil {
+		return err
 	}
 
 	profilePicturePath := path.Join("profile-pictures", userID+".png")
@@ -620,7 +654,9 @@ func (s *UserService) ResetProfilePicture(ctx context.Context, userID string) er
 	return nil
 }
 
-func (s *UserService) disableUserInternal(ctx context.Context, tx *gorm.DB, userID string) error {
+// DisableUserInternal disables a user within an existing transaction
+// It's exported for the LDAP sync, which soft-deletes users that are no longer in the directory
+func (s *UserService) DisableUserInternal(ctx context.Context, tx *gorm.DB, userID string) error {
 	err := tx.
 		WithContext(ctx).
 		Model(&model.User{}).
@@ -630,10 +666,6 @@ func (s *UserService) disableUserInternal(ctx context.Context, tx *gorm.DB, user
 
 	if err != nil {
 		return err
-	}
-
-	if s.scimService != nil {
-		s.scimService.ScheduleSync()
 	}
 
 	return nil

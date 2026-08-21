@@ -17,23 +17,27 @@ import (
 // past their expiry are removed.
 func TestCleanupExpiredOAuth2SessionsKeepsInvalidatedButUnexpiredSessions(t *testing.T) {
 	db := testutils.NewDatabaseForTest(t)
+	err := db.Create(&model.OidcClient{Base: model.Base{ID: "cleanup-client"}, Name: "Cleanup Client"}).Error
+	require.NoError(t, err)
 
 	future := datatype.DateTime(time.Now().Add(time.Hour))
 
 	rows := []OAuth2Session{
-		{Base: model.Base{ID: "expired"}, Kind: "access_token", Key: "k-expired", RequestID: "r1", Active: true, RequestData: "{}", ExpiresAt: new(datatype.DateTime(time.Now().Add(-time.Hour)))},
-		{Base: model.Base{ID: "rotated"}, Kind: "refresh_token", Key: "k-rotated", RequestID: "r2", Active: false, RequestData: "{}", ExpiresAt: &future},
-		{Base: model.Base{ID: "active"}, Kind: "refresh_token", Key: "k-active", RequestID: "r3", Active: true, RequestData: "{}", ExpiresAt: &future},
+		{Base: model.Base{ID: "expired"}, Kind: "access_token", Key: "k-expired", RequestID: "r1", ClientID: "cleanup-client", Active: true, RequestData: `{"client_id":"cleanup-client"}`, ExpiresAt: new(datatype.DateTime(time.Now().Add(-time.Hour)))},
+		{Base: model.Base{ID: "rotated"}, Kind: "refresh_token", Key: "k-rotated", RequestID: "r2", ClientID: "cleanup-client", Active: false, RequestData: `{"client_id":"cleanup-client"}`, ExpiresAt: &future},
+		{Base: model.Base{ID: "active"}, Kind: "refresh_token", Key: "k-active", RequestID: "r3", ClientID: "cleanup-client", Active: true, RequestData: `{"client_id":"cleanup-client"}`, ExpiresAt: &future},
 	}
 	for i := range rows {
-		require.NoError(t, db.Create(&rows[i]).Error)
+		err = db.Create(&rows[i]).Error
+		require.NoError(t, err)
 	}
 
-	deleted, err := CleanupExpiredOAuth2Sessions(t.Context(), db)
+	deleted, err := cleanupExpiredOAuth2Sessions(t.Context(), db)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted)
 
 	var remaining []string
-	require.NoError(t, db.Model(&OAuth2Session{}).Pluck("id", &remaining).Error)
+	err = db.Model(&OAuth2Session{}).Pluck("id", &remaining).Error
+	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"active", "rotated"}, remaining)
 }

@@ -2,13 +2,16 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/italypaleale/francis/host/local"
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"gorm.io/gorm"
 )
 
@@ -39,21 +42,28 @@ type AuditLogger interface {
 
 type Dependencies struct {
 	DB         *gorm.DB
+	Actors     *local.Host
 	Config     Config
 	HTTPClient *http.Client
+
+	GetCIMDURLAllowlist func() []string
 
 	Signer       TokenSigner
 	CustomClaims CustomClaimSource
 	Reauth       ReauthenticationTokenConsumer
 	AuditLog     AuditLogger
 	APIAccess    APIAccessProvider
+
+	// CleanupDisabled skips registering the cron jobs that delete expired rows from the database, for example in tests
+	CleanupDisabled bool
 }
 
 type Module struct {
 	Preview *ClientPreviewBuilder
 
-	config Config
-	store  *Store
+	config       Config
+	store        *Store
+	cimdResolver *cimdClientResolver
 
 	authorizationHandler *authorizationHandler
 	tokenHandler         *tokenHandler
@@ -66,11 +76,19 @@ type Module struct {
 
 func New(ctx context.Context, deps Dependencies) (*Module, error) {
 	store := NewStore(deps.DB, deps.APIAccess).WithIssuer(deps.Config.BaseURL)
+	cimdResolver := newCIMDClientResolver(store, cimdResolverConfig{
+		getURLAllowlist: deps.GetCIMDURLAllowlist,
+		transportDecorator: func(transport http.RoundTripper) http.RoundTripper {
+			return otelhttp.NewTransport(transport)
+		},
+	})
+	store.clientResolver = cimdResolver
+
 	authenticator, err := newFederatedClientAuthenticator(ctx, store, deps.HTTPClient, deps.Config.BaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create federated client authenticator: %w", err)
 	}
-	provider, err := newProvider(store, authenticator, deps.Signer, deps.Config)
+	provider, err := newProvider(store, authenticator, deps.Signer, deps.Config, cimdResolver)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 provider: %w", err)
 	}
@@ -82,13 +100,33 @@ func New(ctx context.Context, deps Dependencies) (*Module, error) {
 	deviceService := newDeviceService(provider, store, provider.deviceStrategy, authorizationService, claimsService, deps.AuditLog, deps.DB)
 	endSessionService := newEndSessionService(deps.DB, store, deps.Signer, deps.Config.BaseURL)
 
+	// Register the cleanup jobs for expired OIDC rows
+	if !deps.CleanupDisabled {
+		if deps.Actors == nil {
+			return nil, errors.New("actor host is required for the OIDC cleanup cron jobs")
+		}
+
+		jobs, err := newCleanupJobs(deps.DB)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, cj := range jobs {
+			err = deps.Actors.RegisterBuiltInActor(cj)
+			if err != nil {
+				return nil, fmt.Errorf("error registering OIDC cleanup cron actor %q: %w", cj.ActorType(), err)
+			}
+		}
+	}
+
 	return &Module{
 		Preview: previewBuilder,
 
-		config: deps.Config,
-		store:  store,
+		config:       deps.Config,
+		store:        store,
+		cimdResolver: cimdResolver,
 
-		authorizationHandler: newAuthorizationHandler(provider, authorizationService, deps.Config.BaseURL),
+		authorizationHandler: newAuthorizationHandler(provider, authorizationService),
 		tokenHandler:         newTokenHandler(provider, claimsService, deps.APIAccess),
 		userInfoHandler:      newUserInfoHandler(provider, claimsService, deps.Config.BaseURL),
 		parHandler:           newPARHandler(provider),
@@ -96,6 +134,11 @@ func New(ctx context.Context, deps Dependencies) (*Module, error) {
 		endSessionHandler:    newEndSessionHandler(endSessionService, deps.Config.BaseURL),
 		deviceHandler:        newDeviceHandler(provider, deviceService),
 	}, nil
+}
+
+// RefreshClientMetadata forces a re-fetch of the OAuth Client ID Metadata Document.
+func (m *Module) RefreshClientMetadata(ctx context.Context, clientID string) (model.OidcClient, error) {
+	return m.cimdResolver.RefreshMetadataClient(ctx, clientID)
 }
 
 func (m *Module) RegisterRoutes(rootGroup *gin.RouterGroup, apiGroup *gin.RouterGroup, optionalBrowserAuth gin.HandlerFunc, browserAuth gin.HandlerFunc) {

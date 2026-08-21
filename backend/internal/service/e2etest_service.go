@@ -43,12 +43,18 @@ import (
 	"github.com/pocket-id/pocket-id/backend/resources"
 )
 
+// LdapSyncer runs a full LDAP synchronization
+// It's an interface so this package doesn't import the ldapsync package, which imports this one in its tests
+type LdapSyncer interface {
+	SyncAll(ctx context.Context, dbConfig *appconfig.AppConfigModel) error
+}
+
 type TestService struct {
 	db               *gorm.DB
 	actors           *local.Host
 	jwtService       *JwtService
 	appConfigService *appconfig.AppConfigService
-	ldapService      *LdapService
+	ldapSyncer       LdapSyncer
 	fileStorage      storage.FileStorage
 	externalIdPKey   jwk.Key
 }
@@ -63,13 +69,13 @@ const (
 	e2eEmailVerificationToken          = "2FZFSoupBdHyqIL65bWTsgCgHIhxlXup"
 )
 
-func NewTestService(db *gorm.DB, actors *local.Host, appConfigService *appconfig.AppConfigService, jwtService *JwtService, ldapService *LdapService, fileStorage storage.FileStorage) (*TestService, error) {
+func NewTestService(db *gorm.DB, actors *local.Host, appConfigService *appconfig.AppConfigService, jwtService *JwtService, ldapSyncer LdapSyncer, fileStorage storage.FileStorage) (*TestService, error) {
 	s := &TestService{
 		db:               db,
 		actors:           actors,
 		appConfigService: appConfigService,
 		jwtService:       jwtService,
-		ldapService:      ldapService,
+		ldapSyncer:       ldapSyncer,
 		fileStorage:      fileStorage,
 	}
 	err := s.initExternalIdP()
@@ -95,6 +101,26 @@ func (s *TestService) initExternalIdP() error {
 	}
 
 	return nil
+}
+
+// seededClientCredentials returns credentials holding a single client secret with the given value, which E2E tests use to authenticate as the client
+func seededClientCredentials(secretID string, value string) model.OidcClientCredentials {
+	return model.OidcClientCredentials{
+		Secrets: seededClientSecrets(secretID, value),
+	}
+}
+
+// seededClientSecrets returns a single never-expiring client secret with the given value
+func seededClientSecrets(secretID string, value string) []model.OidcClientSecret {
+	return []model.OidcClientSecret{
+		{
+			ID:        secretID,
+			Algorithm: model.OidcClientSecretHashSHA256,
+			Hash:      utils.CreateSha256Hash(value),
+			Prefix:    value[:model.OidcClientSecretPrefixLength],
+			CreatedAt: datatype.DateTime(time.Now()),
+		},
+	}
 }
 
 //nolint:gocognit
@@ -175,9 +201,9 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 				Name:               "Nextcloud",
 				Description:        "This is an example description for Nextcloud",
 				LaunchURL:          new("https://nextcloud.local"),
-				Secret:             "$2a$10$9dypwot8nGuCjT6wQWWpJOckZfRprhe2EkwpKizxS/fpVHrOLEJHC", // w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY
-				CallbackURLs:       model.UrlList{"http://nextcloud.localhost/auth/callback"},
-				LogoutCallbackURLs: model.UrlList{"http://nextcloud.localhost/auth/logout/callback"},
+				Credentials:        seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000001", "w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY"),
+				CallbackURLs:       datatype.StringList{"http://nextcloud.localhost/auth/callback"},
+				LogoutCallbackURLs: datatype.StringList{"http://nextcloud.localhost/auth/logout/callback"},
 				ImageType:          new("png"),
 				CreatedByID:        new(users[0].ID),
 			},
@@ -186,8 +212,9 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "606c7782-f2b1-49e5-8ea9-26eb1b06d018",
 				},
 				Name:              "Immich",
-				Secret:            "$2a$10$Ak.FP8riD1ssy2AGGbG.gOpnp/rBpymd74j0nxNMtW0GG1Lb4gzxe", // PYjrE9u4v9GVqXKi52eur0eb2Ci4kc0x
-				CallbackURLs:      model.UrlList{"http://immich.localhost/auth/callback"},
+				LaunchURL:         new("https://immich.local"),
+				Credentials:       seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000002", "PYjrE9u4v9GVqXKi52eur0eb2Ci4kc0x"),
+				CallbackURLs:      datatype.StringList{"http://immich.localhost/auth/callback"},
 				CreatedByID:       new(users[1].ID),
 				IsGroupRestricted: true,
 				AllowedUserGroups: []model.UserGroup{
@@ -199,9 +226,9 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "7c21a609-96b5-4011-9900-272b8d31a9d1",
 				},
 				Name:               "Tailscale",
-				Secret:             "$2a$10$xcRReBsvkI1XI6FG8xu/pOgzeF00bH5Wy4d/NThwcdi3ZBpVq/B9a", // n4VfQeXlTzA6yKpWbR9uJcMdSx2qH0Lo
-				CallbackURLs:       model.UrlList{"http://tailscale.localhost/auth/callback"},
-				LogoutCallbackURLs: model.UrlList{"http://tailscale.localhost/auth/logout/callback"},
+				Credentials:        seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000003", "n4VfQeXlTzA6yKpWbR9uJcMdSx2qH0Lo"),
+				CallbackURLs:       datatype.StringList{"http://tailscale.localhost/auth/callback"},
+				LogoutCallbackURLs: datatype.StringList{"http://tailscale.localhost/auth/logout/callback"},
 				IsGroupRestricted:  true,
 				CreatedByID:        new(users[0].ID),
 				AllowedUserGroups: []model.UserGroup{
@@ -213,11 +240,11 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "c48232ff-ff65-45ed-ae96-7afa8a9b443b",
 				},
 				Name:              "Federated",
-				Secret:            "$2a$10$Ak.FP8riD1ssy2AGGbG.gOpnp/rBpymd74j0nxNMtW0GG1Lb4gzxe", // PYjrE9u4v9GVqXKi52eur0eb2Ci4kc0x
-				CallbackURLs:      model.UrlList{"http://federated.localhost/auth/callback"},
+				CallbackURLs:      datatype.StringList{"http://federated.localhost/auth/callback"},
 				CreatedByID:       new(users[1].ID),
 				AllowedUserGroups: []model.UserGroup{},
 				Credentials: model.OidcClientCredentials{
+					Secrets: seededClientSecrets("2f1b8f1a-1d3e-4f0c-9c1a-000000000004", "PYjrE9u4v9GVqXKi52eur0eb2Ci4kc0x"),
 					FederatedIdentities: []model.OidcClientFederatedIdentity{
 						{
 							Issuer:   "https://external-idp.local",
@@ -233,8 +260,8 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "c46d2090-37a0-4f2b-8748-6aa53b0c1afa",
 				},
 				Name:              "SCIM Client",
-				Secret:            "$2a$10$h4wfa8gI7zavDAxwzSq1sOwYU4e8DwK1XZ8ZweNnY5KzlJ3Iz.qdK", // nQbiuMRG7FpdK2EnDd5MBivWQeKFXohn
-				CallbackURLs:      model.UrlList{"http://scimclient.localhost/auth/callback"},
+				Credentials:       seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000005", "nQbiuMRG7FpdK2EnDd5MBivWQeKFXohn"),
+				CallbackURLs:      datatype.StringList{"http://scimclient.localhost/auth/callback"},
 				CreatedByID:       new(users[0].ID),
 				IsGroupRestricted: true,
 				AllowedUserGroups: []model.UserGroup{
@@ -247,8 +274,8 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "a1b2c3d4-e5f6-7890-abcd-ef0000000001",
 				},
 				Name:         "PAR Test Client",
-				Secret:       "$2a$10$9dypwot8nGuCjT6wQWWpJOckZfRprhe2EkwpKizxS/fpVHrOLEJHC", // w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY
-				CallbackURLs: model.UrlList{"http://par-client.localhost/auth/callback"},
+				Credentials:  seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000006", "w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY"),
+				CallbackURLs: datatype.StringList{"http://par-client.localhost/auth/callback"},
 				CreatedByID:  new(users[0].ID),
 			},
 			{
@@ -256,8 +283,8 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 					ID: "e1f2a3b4-c5d6-7890-abcd-ef0000000002",
 				},
 				Name:         "Skip Consent Client",
-				Secret:       "$2a$10$9dypwot8nGuCjT6wQWWpJOckZfRprhe2EkwpKizxS/fpVHrOLEJHC", // w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY
-				CallbackURLs: model.UrlList{"http://skip-consent.localhost/auth/callback"},
+				Credentials:  seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000007", "w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY"),
+				CallbackURLs: datatype.StringList{"http://skip-consent.localhost/auth/callback"},
 				CreatedByID:  new(users[0].ID),
 				// Trusted client that bypasses the consent screen by default
 				SkipConsent: true,
@@ -277,9 +304,10 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 			Kind:                 "access_token",
 			Key:                  "cross-database-test-session",
 			RequestID:            "cross-database-test-request",
+			ClientID:             oidcClients[0].ID,
 			AccessTokenSignature: "",
 			Active:               true,
-			RequestData:          `{"request":"value"}`,
+			RequestData:          `{"client_id":"3654a746-35d4-4321-ac61-0bdcff2b4055","session":{"subject":"f4b89dc2-62fb-46bf-9f5f-c34f4eafe93e","id_token_claims":{"jti":"cross-database-test-id-token-jti"}}}`,
 			ExpiresAt:            &farFuture,
 		}
 		if err := tx.Create(&oauth2Session).Error; err != nil {
@@ -389,6 +417,25 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 		}
 		for _, permission := range apiPermissions {
 			if err := tx.Create(&permission).Error; err != nil {
+				return err
+			}
+		}
+
+		// Immich may reach the Orders API for both subject types, which is what the permission grants below build on
+		allowedAPIs := []api.OidcClientAllowedAPI{
+			{
+				OidcClientID: oidcClients[1].ID,
+				APIID:        ordersAPI.ID,
+				SubjectType:  oidc.SubjectTypeUser,
+			},
+			{
+				OidcClientID: oidcClients[1].ID,
+				APIID:        ordersAPI.ID,
+				SubjectType:  oidc.SubjectTypeClient,
+			},
+		}
+		for _, allowed := range allowedAPIs {
+			if err := tx.Create(&allowed).Error; err != nil {
 				return err
 			}
 		}
@@ -610,7 +657,7 @@ func (s *TestService) seedOneTimeAccessTokens(ctx context.Context) error {
 		token string
 		ttl   time.Duration
 	}{
-		{token: "HPe6k6u1DRRVuAQV", ttl: time.Hour},
+		{token: "HPe6k6u1DRRV", ttl: time.Hour},
 		{token: "0ne-t1me-t0ken", ttl: time.Hour},
 	}
 
@@ -750,7 +797,7 @@ func (s *TestService) SyncLdap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("error loading app configuration: %w", err)
 	}
-	return s.ldapService.SyncAll(ctx, dbConfig)
+	return s.ldapSyncer.SyncAll(ctx, dbConfig)
 }
 
 // SetLdapTestConfig updates the LDAP configuration used by the end-to-end test server
@@ -864,7 +911,7 @@ func (s *TestService) SignAccessToken(ctx context.Context, userID, clientID stri
 	keyGetter := func(context.Context) (interface{}, error) {
 		return oidc.SigningKeyFromSigner(s.jwtService)
 	}
-	strategy := compose.NewOAuth2JWTStrategy(keyGetter, coreStrategy, fositeConfig)
+	strategy := oidc.NewAccessTokenStrategy(compose.NewOAuth2RFC9068JWTStrategy(keyGetter, coreStrategy, fositeConfig), common.EnvConfig.AppURL)
 
 	expiresAt := time.Now().UTC().Add(AccessTokenDuration)
 	if expired {

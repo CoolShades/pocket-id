@@ -1,7 +1,6 @@
 package emailverification
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
@@ -9,11 +8,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 )
-
-type AppConfigResolver interface {
-	GetConfig(ctx context.Context) (*appconfig.AppConfigModel, error)
-}
 
 type Dependencies struct {
 	DB     *gorm.DB
@@ -21,7 +17,7 @@ type Dependencies struct {
 
 	Users       UserProvider
 	EmailSender EmailSender
-	AppConfig   AppConfigResolver
+	AppConfig   appconfig.AppConfigResolver
 	AppURL      string
 }
 
@@ -45,6 +41,6 @@ func New(deps Dependencies) (*Module, error) {
 
 // RegisterRoutes mounts the email verification endpoints
 func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, userAuth, sendRateLimit, verifyRateLimit gin.HandlerFunc) {
-	apiGroup.POST("/users/me/send-email-verification", sendRateLimit, userAuth, m.handler.send)
-	apiGroup.POST("/users/me/verify-email", verifyRateLimit, userAuth, m.handler.verify)
+	apiGroup.POST("/users/me/send-email-verification", sendRateLimit, userAuth, httpserver.Handle(m.handler.send))
+	apiGroup.POST("/users/me/verify-email", verifyRateLimit, userAuth, httpserver.Handle(m.handler.verify))
 }
