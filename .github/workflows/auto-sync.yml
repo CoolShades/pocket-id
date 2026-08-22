@@ -1,4 +1,10 @@
-name: Auto-sync with upstream
+name: Auto-sync with upstream releases
+
+# Checks daily whether the upstream repo has published a new release.
+# Between releases every run is a cheap no-op; when a new release tag
+# appears, main is synced to that tag and then merged into the feature
+# branch. Commits that land on upstream main between releases are
+# deliberately ignored until they ship in a release.
 
 on:
   schedule:
@@ -37,22 +43,52 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Find latest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `releases/latest` excludes drafts and prereleases, so this only
+          # moves when a proper release is published.
+          TAG=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq .tag_name)
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not determine the latest upstream release."
+            exit 1
+          fi
+          echo "Latest upstream release: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Add upstream remote and fetch
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream main --tags
 
-      - name: Sync origin/main from upstream/main
+      - name: Check whether the release is already synced
+        id: check
         run: |
-          git checkout main
-          if git merge-base --is-ancestor origin/main upstream/main; then
-            # Fast-forward is possible — origin/main is strictly behind upstream
-            git merge --ff-only upstream/main
+          TAG=${{ steps.release.outputs.tag }}
+          TAG_COMMIT=$(git rev-parse "${TAG}^{commit}")
+          if git merge-base --is-ancestor "$TAG_COMMIT" "origin/${{ env.TARGET_BRANCH }}"; then
+            echo "Release ${TAG} is already contained in ${{ env.TARGET_BRANCH }} — nothing to do."
+            echo "synced=true" >> "$GITHUB_OUTPUT"
           else
-            # origin/main has diverged (expected: this workflow file lives here).
+            echo "Release ${TAG} is not yet in ${{ env.TARGET_BRANCH }} — syncing."
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync origin/main to the release tag
+        if: steps.check.outputs.synced == 'false'
+        run: |
+          TAG=${{ steps.release.outputs.tag }}
+          git checkout main
+          if git merge-base --is-ancestor main "${TAG}^{commit}"; then
+            # Fast-forward is possible — main is strictly behind the release
+            git merge --ff-only "${TAG}^{commit}"
+          else
+            # main has diverged (expected: this workflow file lives here).
             # Perform a real merge so both histories are preserved.
-            git merge --no-edit upstream/main || {
-              echo "::error::Conflict merging upstream/main into origin/main. Resolve manually."
+            git merge --no-edit "$TAG" || {
+              echo "::error::Conflict merging release ${TAG} into origin/main. Resolve manually."
               exit 1
             }
           fi
@@ -60,6 +96,7 @@ jobs:
 
       - name: Attempt merge of main into ${{ env.TARGET_BRANCH }}
         id: merge
+        if: steps.check.outputs.synced == 'false'
         run: |
           git checkout ${{ env.TARGET_BRANCH }}
           git pull --ff-only origin ${{ env.TARGET_BRANCH }} || true
@@ -87,13 +124,27 @@ jobs:
           # `label create` on fork checkouts, which is wrong — we want the fork.
           GH_REPO: ${{ github.repository }}
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          BRANCH="sync-conflict/${DATE}"
+          TAG=${{ steps.release.outputs.tag }}
+
+          # If a previous sync-conflict PR is still open, do not open another
+          # one — resolve and merge it first, then the next run picks up
+          # whatever is still outstanding.
+          EXISTING=$(gh pr list \
+            --base ${{ env.TARGET_BRANCH }} \
+            --state open \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync-conflict/"))] | .[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "::error::Sync conflict from main into ${{ env.TARGET_BRANCH }}, and PR #${EXISTING} is still open. Resolve and merge it first — no new PR was opened."
+            exit 1
+          fi
+
+          BRANCH="sync-conflict/${TAG}"
           git checkout -B "$BRANCH" ${{ env.TARGET_BRANCH }}
           # Re-do the merge so the conflict markers land on the sync-conflict branch
           git merge --no-edit main || true
           git add -A
-          git commit -m "WIP: sync conflict from main into ${{ env.TARGET_BRANCH }} on ${DATE}
+          git commit -m "WIP: sync conflict merging release ${TAG} into ${{ env.TARGET_BRANCH }}
 
           This commit contains the merge conflict markers. Resolve them, then
           merge this PR into ${{ env.TARGET_BRANCH }}."
@@ -102,16 +153,14 @@ jobs:
           # Ensure the sync-conflict label exists (forks don't inherit upstream labels).
           gh label create sync-conflict \
             --color EA8A00 \
-            --description "Auto-opened PR carrying conflict markers from daily upstream sync" \
+            --description "Auto-opened PR carrying conflict markers from upstream release sync" \
             2>/dev/null || true
 
-          # If a PR for this branch already exists today, `gh pr create` exits non-zero;
-          # treat that case as success but fail loudly on any other error.
-          if ! gh pr create \
+          gh pr create \
             --base ${{ env.TARGET_BRANCH }} \
             --head "$BRANCH" \
-            --title "auto-sync: resolve conflicts from main into ${{ env.TARGET_BRANCH }} (${DATE})" \
-            --body "The daily auto-sync hit a merge conflict bringing **upstream main** into **${{ env.TARGET_BRANCH }}**.
+            --title "auto-sync: resolve conflicts from release ${TAG} into ${{ env.TARGET_BRANCH }}" \
+            --body "Syncing **upstream release ${TAG}** into **${{ env.TARGET_BRANCH }}** hit a merge conflict.
 
           ### Resolve locally
 
@@ -125,16 +174,9 @@ jobs:
           \`\`\`
 
           Then merge this PR." \
-            --label "sync-conflict"; then
-            if gh pr list --head "$BRANCH" --base ${{ env.TARGET_BRANCH }} --state open --json number --jq '.[0].number' | grep -q .; then
-              echo "::warning::PR for ${BRANCH} already open — skipping creation."
-            else
-              echo "::error::gh pr create failed and no existing PR for ${BRANCH} was found."
-              exit 1
-            fi
-          fi
+            --label "sync-conflict"
 
           # Even when the PR step succeeds, a conflict is a condition the user must act on.
           # Fail the job so the Actions UI turns red and GitHub emails on failure.
-          echo "::error::Sync conflict from main into ${{ env.TARGET_BRANCH }} — see PR for ${BRANCH}."
+          echo "::error::Sync conflict merging release ${TAG} into ${{ env.TARGET_BRANCH }} — see PR for ${BRANCH}."
           exit 1
