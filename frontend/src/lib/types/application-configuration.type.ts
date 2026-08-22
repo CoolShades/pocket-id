@@ -16,7 +16,6 @@ export type AppConfig = {
 	tracingEnabled: boolean;
 	dynamicBackgroundEnabled: boolean;
 	dynamicBackgroundTheme: string;
-	dynamicBackgroundSeed: number;
 	dynamicBackgroundDensity: number;
 	dynamicBackgroundFlowSpeed: number;
 	dynamicBackgroundNoiseScale: number;

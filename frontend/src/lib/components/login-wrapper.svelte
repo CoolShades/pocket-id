@@ -8,14 +8,13 @@
 	import { m } from '$lib/paraglide/messages';
 	import appConfigStore from '$lib/stores/application-configuration-store';
 	import { cachedBackgroundImage } from '$lib/utils/cached-image-util';
-	import { applyAccentColor } from '$lib/utils/accent-color-util';
 	import { cn } from '$lib/utils/style';
 	import { mode } from 'mode-watcher';
-	import { onDestroy, onMount, type Snippet } from 'svelte';
+	import { onMount, type Snippet } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { fade } from 'svelte/transition';
 	import DynamicBackground from './dynamic-background/dynamic-background.svelte';
-	import { getThemeByName, type DynamicBackgroundConfig } from './dynamic-background/themes';
+	import type { DynamicBackgroundConfig } from './dynamic-background/themes';
 	import * as Card from './ui/card';
 
 	let {
@@ -46,7 +45,7 @@
 	let canUseDynamic = $state(false);
 	let dynamicFailed = $state(false);
 
-	// Fresh seed each mount so the pattern differs per visit; admin preview still uses the configured seed.
+	// Fresh seed each mount so the pattern differs per visit.
 	const randomSeed = Math.floor(Math.random() * 4294967295) + 1;
 
 	onMount(() => {
@@ -80,23 +79,6 @@
 		particleSize: $appConfigStore.dynamicBackgroundParticleSize
 	});
 
-	// When dynamic background is active on the login page, temporarily swap
-	// the accent color to one that matches the selected theme. Revert to the
-	// admin-saved accentColor when dynamic bg is off or the component unmounts.
-	$effect(() => {
-		if (useDynamic) {
-			const theme = getThemeByName($appConfigStore.dynamicBackgroundTheme);
-			applyAccentColor(theme.accent);
-		} else {
-			applyAccentColor($appConfigStore.accentColor);
-		}
-	});
-
-	onDestroy(() => {
-		// Restore whatever the store says when leaving the login page.
-		applyAccentColor($appConfigStore.accentColor);
-	});
-
 	// "Background visible" = dynamic is active OR the static background image exists.
 	// Drives the side-by-side desktop layout and the transparent-card mobile fallback.
 	let hasVisibleBackground = $derived(useDynamic || backgroundImageExists === true);
@@ -120,9 +102,8 @@
 			: 'justify-center'}"
 	>
 		<div
-			class="relative z-10 flex h-full p-16 {cn(
-				showAlternativeSignInMethodButton && 'pb-0',
-				hasVisibleBackground && 'w-full max-w-[650px] 2xl:max-w-[800px]'
+			class="relative z-10 flex h-full w-full max-w-[650px] 2xl:max-w-[800px] p-16 {cn(
+				showAlternativeSignInMethodButton && 'pb-0'
 			)}"
 		>
 			<div class="flex h-full w-full flex-col overflow-hidden">
@@ -162,7 +143,7 @@
 					src={cachedBackgroundImage.getUrl()}
 					class="{cn(
 						animate && 'animate-bg-zoom'
-					)} h-screen w-[calc(100vw-650px)] object-cover 2xl:w-[calc(100vw-800px)]"
+					)} h-screen object-cover w-[calc(100vw-650px)] 2xl:w-[calc(100vw-800px)]"
 					alt={m.login_background()}
 				/>
 			</div>
@@ -181,9 +162,7 @@
 	{/if}
 	<div
 		class="flex min-h-dvh items-center justify-center bg-cover bg-center text-center"
-		style={!useDynamic && backgroundImageExists
-			? `background-image: url(${cachedBackgroundImage.getUrl()});`
-			: ''}
+		style={useDynamic ? '' : `background-image: url(${cachedBackgroundImage.getUrl()});`}
 	>
 		<Card.Root
 			class={{
@@ -192,7 +171,7 @@
 			}}
 		>
 			<Card.CardContent
-				class="px-4 py-10 sm:p-10 {showAlternativeSignInMethodButton ? 'pb-3 sm:pb-3' : ''}"
+				class="px-4 py-10 sm:p-10 {showAlternativeSignInMethodButton ? 'pb-3 sm:pb-3' : ''} "
 			>
 				{@render children()}
 				{#if showAlternativeSignInMethodButton}

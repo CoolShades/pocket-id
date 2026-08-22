@@ -1,10 +1,9 @@
 /// <reference lib="webworker" />
 
 // Dynamic background worker — runs the flow-field particle animation
-// entirely off the main thread via OffscreenCanvas. Ported from the
-// Pocket ID background generator prototype with a message-handler split
-// so most param changes no longer reinitialize particles (keeping the
-// admin live preview smooth).
+// entirely off the main thread via OffscreenCanvas. Parameter changes arrive
+// as targeted messages so that most of them don't reinitialize the particles,
+// which keeps the admin live preview smooth.
 
 type RGB = [number, number, number];
 
@@ -205,7 +204,7 @@ const GRID_REFRESH_MS = 500; // recompute flow field every 500ms
 const NUM_COLORS = 4;
 const NUM_ALPHA = 4;
 const NUM_BUCKETS = NUM_COLORS * NUM_ALPHA;
-// Dark-mode stroke alphas (original prototype values — tuned for light strokes on dark bg).
+// Dark-mode stroke alphas, tuned for light strokes on a dark background.
 const ALPHA_LEVELS_DARK = [0.03, 0.07, 0.12, 0.18];
 // Light-mode stroke alphas — boosted to compensate for the logarithmic drop in
 // perceived contrast when drawing dark strokes on a pale background. Without
@@ -226,7 +225,7 @@ const buckets: number[][] = [];
 for (let i = 0; i < NUM_BUCKETS; i++) buckets[i] = [];
 let styleCache: string[] = [];
 
-let cfg: Config = {
+const cfg: Config = {
 	seed: 12345,
 	density: 4,
 	flowSpeed: 1,

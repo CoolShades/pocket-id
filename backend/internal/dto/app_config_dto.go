@@ -26,7 +26,6 @@ type AppConfigUpdateDto struct {
 	AccentColor                                string `json:"accentColor"`
 	DynamicBackgroundEnabled                   string `json:"dynamicBackgroundEnabled" binding:"required,boolean_string"`
 	DynamicBackgroundTheme                     string `json:"dynamicBackgroundTheme" binding:"required,oneof=Ember Ocean Forest Sunset Lavender Cherry Gold Midnight Neon Monochrome"`
-	DynamicBackgroundSeed                      string `json:"dynamicBackgroundSeed" binding:"required,integer_string"`
 	DynamicBackgroundDensity                   string `json:"dynamicBackgroundDensity" binding:"required,numeric"`
 	DynamicBackgroundFlowSpeed                 string `json:"dynamicBackgroundFlowSpeed" binding:"required,numeric"`
 	DynamicBackgroundNoiseScale                string `json:"dynamicBackgroundNoiseScale" binding:"required,numeric"`

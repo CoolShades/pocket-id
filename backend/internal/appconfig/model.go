@@ -29,7 +29,6 @@ type AppConfigModel struct {
 	// Dynamic background
 	DynamicBackgroundEnabled      AppConfigValue `json:"dynamicBackgroundEnabled" env:"DYNAMIC_BACKGROUND_ENABLED" type:"bool" public:"true"`
 	DynamicBackgroundTheme        AppConfigValue `json:"dynamicBackgroundTheme" env:"DYNAMIC_BACKGROUND_THEME" public:"true"`
-	DynamicBackgroundSeed         AppConfigValue `json:"dynamicBackgroundSeed" env:"DYNAMIC_BACKGROUND_SEED" type:"int" public:"true"`
 	DynamicBackgroundDensity      AppConfigValue `json:"dynamicBackgroundDensity" env:"DYNAMIC_BACKGROUND_DENSITY" public:"true"`
 	DynamicBackgroundFlowSpeed    AppConfigValue `json:"dynamicBackgroundFlowSpeed" env:"DYNAMIC_BACKGROUND_FLOW_SPEED" public:"true"`
 	DynamicBackgroundNoiseScale   AppConfigValue `json:"dynamicBackgroundNoiseScale" env:"DYNAMIC_BACKGROUND_NOISE_SCALE" public:"true"`
@@ -144,7 +143,6 @@ func getDefaultConfig() *AppConfigModel {
 		// Dynamic background
 		DynamicBackgroundEnabled:      "false",
 		DynamicBackgroundTheme:        "Neon",
-		DynamicBackgroundSeed:         "300177",
 		DynamicBackgroundDensity:      "0.0376",
 		DynamicBackgroundFlowSpeed:    "2.36",
 		DynamicBackgroundNoiseScale:   "0.015",

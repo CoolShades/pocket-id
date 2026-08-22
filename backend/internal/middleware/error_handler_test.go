@@ -215,15 +215,6 @@ func TestValidationResponseUsesAppConfigTypeMessages(t *testing.T) {
 		DisableAnimations:                "false",
 		AllowOwnAccountEdit:              "true",
 		AllowUserSignups:                 "disabled",
-		DynamicBackgroundEnabled:         "false",
-		DynamicBackgroundTheme:           "Neon",
-		DynamicBackgroundSeed:            "300177",
-		DynamicBackgroundDensity:         "0.0376",
-		DynamicBackgroundFlowSpeed:       "2.36",
-		DynamicBackgroundNoiseScale:      "0.015",
-		DynamicBackgroundTurbulence:      "8",
-		DynamicBackgroundTrailFade:       "0.355",
-		DynamicBackgroundParticleSize:    "236",
 		RequireUserEmail:                 "hello",
 		SmtpTls:                          "none",
 		SmtpSkipCertVerify:               "false",
@@ -238,6 +229,15 @@ func TestValidationResponseUsesAppConfigTypeMessages(t *testing.T) {
 		EmailLoginNotificationEnabled:              "false",
 		EmailApiKeyExpirationEnabled:               "false",
 		EmailVerificationEnabled:                   "false",
+
+		DynamicBackgroundEnabled:      "false",
+		DynamicBackgroundTheme:        "Neon",
+		DynamicBackgroundDensity:      "0.0376",
+		DynamicBackgroundFlowSpeed:    "2.36",
+		DynamicBackgroundNoiseScale:   "0.015",
+		DynamicBackgroundTurbulence:   "8",
+		DynamicBackgroundTrailFade:    "0.355",
+		DynamicBackgroundParticleSize: "236",
 	}
 	payload, err := json.Marshal(input)
 	require.NoError(t, err)

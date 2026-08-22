@@ -316,13 +316,12 @@ test.describe('Update dynamic background configuration', () => {
 
 	// min/max come from validateDynamicBackground in backend/internal/appconfig/service.go
 	const outOfRange = [
-		{ key: 'dynamicBackgroundSeed', value: '0' }, // min 1
-		{ key: 'dynamicBackgroundDensity', value: '9999' }, // max 0.19
-		{ key: 'dynamicBackgroundFlowSpeed', value: '100' }, // max 8.26
+		{ key: 'dynamicBackgroundDensity', value: '9999' }, // max 0.2
+		{ key: 'dynamicBackgroundFlowSpeed', value: '100' }, // max 10
 		{ key: 'dynamicBackgroundNoiseScale', value: '0' }, // min 0.0001
-		{ key: 'dynamicBackgroundTurbulence', value: '29' }, // max 28
-		{ key: 'dynamicBackgroundTrailFade', value: '0.9' }, // max 0.89
-		{ key: 'dynamicBackgroundParticleSize', value: '827' } // max 826
+		{ key: 'dynamicBackgroundTurbulence', value: '31' }, // max 30
+		{ key: 'dynamicBackgroundTrailFade', value: '0.95' }, // max 0.9
+		{ key: 'dynamicBackgroundParticleSize', value: '1001' } // max 1000
 	];
 
 	for (const { key, value } of outOfRange) {

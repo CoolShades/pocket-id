@@ -7,10 +7,6 @@ type ThemeVariant = {
 
 export type Theme = {
 	name: string;
-	/** Pocket ID accent color string (oklch(...) or "default") applied when the
-	 * theme is active on the login page. Matches one of the existing presets in
-	 * accent-color-picker.svelte. */
-	accent: string;
 	dark: ThemeVariant;
 	light: ThemeVariant;
 };
@@ -21,7 +17,6 @@ export type Theme = {
 export const THEMES: readonly Theme[] = [
 	{
 		name: 'Ember',
-		accent: 'oklch(0.68 0.2 50)', // Orange
 		dark: {
 			bg: [43, 41, 38],
 			palette: [
@@ -43,7 +38,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Ocean',
-		accent: 'oklch(0.6 0.2 240)', // Blue
 		dark: {
 			bg: [12, 25, 45],
 			palette: [
@@ -65,7 +59,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Forest',
-		accent: 'oklch(0.65 0.2 150)', // Green
 		dark: {
 			bg: [22, 32, 22],
 			palette: [
@@ -87,7 +80,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Sunset',
-		accent: 'oklch(0.68 0.2 50)', // Orange
 		dark: {
 			bg: [45, 25, 30],
 			palette: [
@@ -109,7 +101,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Lavender',
-		accent: 'oklch(0.6 0.24 300)', // Purple
 		dark: {
 			bg: [35, 28, 48],
 			palette: [
@@ -131,7 +122,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Cherry',
-		accent: 'oklch(0.63 0.2 15)', // Rose
 		dark: {
 			bg: [40, 18, 22],
 			palette: [
@@ -153,7 +143,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Gold',
-		accent: 'oklch(0.75 0.18 80)', // Amber
 		dark: {
 			bg: [40, 35, 20],
 			palette: [
@@ -175,7 +164,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Midnight',
-		accent: 'oklch(0.6 0.2 240)', // Blue
 		dark: {
 			bg: [10, 10, 20],
 			palette: [
@@ -197,7 +185,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Neon',
-		accent: 'oklch(0.6 0.15 180)', // Teal
 		dark: {
 			bg: [10, 10, 15],
 			palette: [
@@ -219,7 +206,6 @@ export const THEMES: readonly Theme[] = [
 	},
 	{
 		name: 'Monochrome',
-		accent: 'default',
 		dark: {
 			bg: [20, 20, 20],
 			palette: [
@@ -250,10 +236,6 @@ export function getTheme(name: string, mode: ColorMode): ThemeVariant {
 	return theme[mode];
 }
 
-export function getThemeByName(name: string): Theme {
-	return THEMES.find((t) => t.name === name) ?? THEMES[0];
-}
-
 export type DynamicBackgroundConfig = {
 	theme: string;
 	seed: number;
@@ -265,9 +247,8 @@ export type DynamicBackgroundConfig = {
 	particleSize: number;
 };
 
-export const DEFAULT_CONFIG: DynamicBackgroundConfig = {
+export const DEFAULT_CONFIG: Omit<DynamicBackgroundConfig, 'seed'> = {
 	theme: 'Neon',
-	seed: 300177,
 	density: 0.0376,
 	flowSpeed: 2.36,
 	noiseScale: 0.015,

@@ -23,7 +23,6 @@
 	} = $props();
 
 	let canvasEl = $state<HTMLCanvasElement | null>(null);
-	let container = $state<HTMLDivElement | null>(null);
 	let worker: Worker | null = null;
 	let initialized = false;
 	let lastCfg: DynamicBackgroundConfig | null = null;
@@ -74,7 +73,7 @@
 	let renderH = 0;
 
 	onMount(() => {
-		if (!canvasEl || !container) return;
+		if (!canvasEl) return;
 		try {
 			const offscreen = canvasEl.transferControlToOffscreen();
 			worker = new DynamicWorker();
@@ -154,10 +153,6 @@
 	});
 </script>
 
-<div
-	bind:this={container}
-	class="relative overflow-hidden {className}"
-	style={`background-color: ${containerBg};`}
->
+<div class="relative overflow-hidden {className}" style={`background-color: ${containerBg};`}>
 	<canvas bind:this={canvasEl} class="absolute top-0 left-0 block"></canvas>
 </div>
