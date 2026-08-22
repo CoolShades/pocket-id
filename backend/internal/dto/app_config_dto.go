@@ -24,6 +24,15 @@ type AppConfigUpdateDto struct {
 	SignupDefaultUserGroupIDs                  string `json:"signupDefaultUserGroupIDs" binding:"omitempty,json_string_array"`
 	SignupDefaultCustomClaims                  string `json:"signupDefaultCustomClaims" binding:"omitempty,json_custom_claims"`
 	AccentColor                                string `json:"accentColor"`
+	DynamicBackgroundEnabled                   string `json:"dynamicBackgroundEnabled" binding:"required,boolean_string"`
+	DynamicBackgroundTheme                     string `json:"dynamicBackgroundTheme" binding:"required,oneof=Ember Ocean Forest Sunset Lavender Cherry Gold Midnight Neon Monochrome"`
+	DynamicBackgroundSeed                      string `json:"dynamicBackgroundSeed" binding:"required,integer_string"`
+	DynamicBackgroundDensity                   string `json:"dynamicBackgroundDensity" binding:"required,numeric"`
+	DynamicBackgroundFlowSpeed                 string `json:"dynamicBackgroundFlowSpeed" binding:"required,numeric"`
+	DynamicBackgroundNoiseScale                string `json:"dynamicBackgroundNoiseScale" binding:"required,numeric"`
+	DynamicBackgroundTurbulence                string `json:"dynamicBackgroundTurbulence" binding:"required,numeric"`
+	DynamicBackgroundTrailFade                 string `json:"dynamicBackgroundTrailFade" binding:"required,numeric"`
+	DynamicBackgroundParticleSize              string `json:"dynamicBackgroundParticleSize" binding:"required,numeric"`
 	RequireUserEmail                           string `json:"requireUserEmail" binding:"required,boolean_string"`
 	SmtpHost                                   string `json:"smtpHost"`
 	SmtpPort                                   string `json:"smtpPort"`

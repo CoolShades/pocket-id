@@ -14,6 +14,15 @@ export type AppConfig = {
 	accentColor: string;
 	requireUserEmail: boolean;
 	tracingEnabled: boolean;
+	dynamicBackgroundEnabled: boolean;
+	dynamicBackgroundTheme: string;
+	dynamicBackgroundSeed: number;
+	dynamicBackgroundDensity: number;
+	dynamicBackgroundFlowSpeed: number;
+	dynamicBackgroundNoiseScale: number;
+	dynamicBackgroundTurbulence: number;
+	dynamicBackgroundTrailFade: number;
+	dynamicBackgroundParticleSize: number;
 };
 
 export type AllAppConfig = AppConfig & {

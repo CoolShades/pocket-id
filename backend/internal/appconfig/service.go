@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -134,6 +135,11 @@ func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppCon
 		}
 	}
 
+	// Validate the dynamic background parameters
+	if err := validateDynamicBackground(input); err != nil {
+		return nil, err
+	}
+
 	// Replace the entire config by invoking the actor
 	cfg, err := s.invokeConfigActor(ctx, "replace", input)
 	if err != nil {
@@ -142,6 +148,44 @@ func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppCon
 
 	// Return the updated config
 	return cfg.ToAppConfigVariableSlice(true, false), nil
+}
+
+// validateDynamicBackground enforces numeric bounds on the dynamic background
+// parameters. The DTO's binding tags ensure values are numeric strings; this
+// function clamps them to safe ranges matching the frontend prototype so an
+// admin (or API caller) cannot request unbounded particle counts.
+//
+// An empty value is left alone: AppConfigModel.Replace resets those to the
+// default, which is always in range.
+func validateDynamicBackground(input dto.AppConfigUpdateDto) error {
+	checks := []struct {
+		key   string
+		value string
+		min   float64
+		max   float64
+	}{
+		{"dynamicBackgroundSeed", input.DynamicBackgroundSeed, 1, 4294967295},
+		{"dynamicBackgroundDensity", input.DynamicBackgroundDensity, 0.0001, 0.19},
+		{"dynamicBackgroundFlowSpeed", input.DynamicBackgroundFlowSpeed, 0.01, 8.26},
+		{"dynamicBackgroundNoiseScale", input.DynamicBackgroundNoiseScale, 0.0001, 0.053},
+		{"dynamicBackgroundTurbulence", input.DynamicBackgroundTurbulence, 1, 28},
+		{"dynamicBackgroundTrailFade", input.DynamicBackgroundTrailFade, 0.005, 0.89},
+		{"dynamicBackgroundParticleSize", input.DynamicBackgroundParticleSize, 0.5, 826},
+	}
+	for _, c := range checks {
+		if c.value == "" {
+			continue
+		}
+
+		v, err := strconv.ParseFloat(c.value, 64)
+		if err != nil {
+			return apperror.InvalidField(c.key, "numeric", "must be numeric")
+		}
+		if v < c.min || v > c.max {
+			return apperror.InvalidField(c.key, "out_of_range", fmt.Sprintf("must be between %v and %v", c.min, c.max))
+		}
+	}
+	return nil
 }
 
 // UpdateAppConfigValues updates the provided application configuration values.

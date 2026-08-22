@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 import { cleanupBackend } from '../utils/cleanup.util';
 
 test.beforeEach(async ({ page }) => {
@@ -261,4 +261,80 @@ test.describe('Update application images', () => {
 			'File must be of type PNG or JPEG'
 		);
 	});
+});
+
+test.describe('Update dynamic background configuration', () => {
+	// Scoped to this test rather than a beforeEach: the API tests below don't
+	// touch the UI, and shouldn't fail if the tab is renamed.
+	test('should configure dynamic background', async ({ page }) => {
+		await page.getByRole('tab', { name: 'Dynamic Background' }).click();
+		await page.getByLabel('Enable dynamic background').click();
+		await page.getByRole('button', { name: 'Ocean', exact: true }).click();
+		await page.getByRole('button', { name: 'Save' }).last().click();
+
+		await expect(page.locator('[data-type="success"]')).toHaveText(
+			'Application configuration updated successfully'
+		);
+
+		await page.reload();
+		await page.getByRole('tab', { name: 'Dynamic Background' }).click();
+		await expect(page.getByLabel('Enable dynamic background')).toBeChecked();
+
+		// Verify the login page renders a canvas when enabled
+		await page.context().clearCookies();
+		await page.goto('/login');
+		await expect(page.locator('canvas')).toBeVisible();
+	});
+
+	// Reads the live config as a flat key/value object, so the payloads below carry
+	// every field the DTO marks as required. A partial body would be rejected by
+	// request binding before validateDynamicBackground ever runs, which would make
+	// these tests pass even if the range check were deleted.
+	async function fetchConfig(request: APIRequestContext) {
+		const res = await request.get('/api/application-configuration/all');
+		expect(res.ok()).toBe(true);
+
+		return Object.fromEntries(
+			((await res.json()) as Array<{ key: string; value: string }>).map(({ key, value }) => [
+				key,
+				value
+			])
+		);
+	}
+
+	test('should accept in-range dynamic background values via API', async ({ request }) => {
+		const config = await fetchConfig(request);
+
+		const res = await request.put('/api/application-configuration', {
+			data: { ...config, dynamicBackgroundEnabled: 'true', dynamicBackgroundDensity: '0.05' }
+		});
+
+		// Establishes the baseline: this body passes binding, so a 400 in the tests
+		// below can only come from the range check itself.
+		expect(res.status()).toBe(200);
+	});
+
+	// min/max come from validateDynamicBackground in backend/internal/appconfig/service.go
+	const outOfRange = [
+		{ key: 'dynamicBackgroundSeed', value: '0' }, // min 1
+		{ key: 'dynamicBackgroundDensity', value: '9999' }, // max 0.19
+		{ key: 'dynamicBackgroundFlowSpeed', value: '100' }, // max 8.26
+		{ key: 'dynamicBackgroundNoiseScale', value: '0' }, // min 0.0001
+		{ key: 'dynamicBackgroundTurbulence', value: '29' }, // max 28
+		{ key: 'dynamicBackgroundTrailFade', value: '0.9' }, // max 0.89
+		{ key: 'dynamicBackgroundParticleSize', value: '827' } // max 826
+	];
+
+	for (const { key, value } of outOfRange) {
+		test(`should reject out-of-range ${key} via API`, async ({ request }) => {
+			const config = await fetchConfig(request);
+
+			const res = await request.put('/api/application-configuration', {
+				data: { ...config, [key]: value }
+			});
+
+			expect(res.status()).toBe(400);
+			expect(await res.text()).toContain(key);
+		});
+	}
 });

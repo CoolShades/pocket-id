@@ -9,6 +9,7 @@
 	import { axiosErrorToast } from '$lib/utils/error-util';
 	import { LucideInfo } from '@lucide/svelte';
 	import { toast } from 'svelte-sonner';
+	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
 	import AppConfigDynamicClientsForm from './forms/app-config-dynamic-clients-form.svelte';
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
 	import AppConfigGeneralForm from './forms/app-config-general-form.svelte';
@@ -124,6 +125,9 @@
 			<Tabs.Trigger value="oidc">
 				{m.oidc()}
 			</Tabs.Trigger>
+			<Tabs.Trigger value="dynamic-background">
+				{m.dynamic_background()}
+			</Tabs.Trigger>
 		</Tabs.List>
 	</div>
 
@@ -206,6 +210,18 @@
 			</Card.Header>
 			<Card.Content>
 				<AppConfigDynamicClientsForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="dynamic-background" id="application-configuration-dynamic-background">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.dynamic_background()}</Card.Title>
+				<Card.Description>{m.dynamic_background_description()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>

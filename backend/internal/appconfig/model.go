@@ -26,6 +26,16 @@ type AppConfigModel struct {
 
 	SignupDefaultUserGroupIDs AppConfigValue `json:"signupDefaultUserGroupIDs" env:"SIGNUP_DEFAULT_USER_GROUP_IDS"` // JSON-encoded array of strings
 	SignupDefaultCustomClaims AppConfigValue `json:"signupDefaultCustomClaims" env:"SIGNUP_DEFAULT_CUSTOM_CLAIMS"`  // JSON-encoded array of {key:string,value:string}
+	// Dynamic background
+	DynamicBackgroundEnabled      AppConfigValue `json:"dynamicBackgroundEnabled" env:"DYNAMIC_BACKGROUND_ENABLED" type:"bool" public:"true"`
+	DynamicBackgroundTheme        AppConfigValue `json:"dynamicBackgroundTheme" env:"DYNAMIC_BACKGROUND_THEME" public:"true"`
+	DynamicBackgroundSeed         AppConfigValue `json:"dynamicBackgroundSeed" env:"DYNAMIC_BACKGROUND_SEED" type:"int" public:"true"`
+	DynamicBackgroundDensity      AppConfigValue `json:"dynamicBackgroundDensity" env:"DYNAMIC_BACKGROUND_DENSITY" public:"true"`
+	DynamicBackgroundFlowSpeed    AppConfigValue `json:"dynamicBackgroundFlowSpeed" env:"DYNAMIC_BACKGROUND_FLOW_SPEED" public:"true"`
+	DynamicBackgroundNoiseScale   AppConfigValue `json:"dynamicBackgroundNoiseScale" env:"DYNAMIC_BACKGROUND_NOISE_SCALE" public:"true"`
+	DynamicBackgroundTurbulence   AppConfigValue `json:"dynamicBackgroundTurbulence" env:"DYNAMIC_BACKGROUND_TURBULENCE" public:"true"`
+	DynamicBackgroundTrailFade    AppConfigValue `json:"dynamicBackgroundTrailFade" env:"DYNAMIC_BACKGROUND_TRAIL_FADE" public:"true"`
+	DynamicBackgroundParticleSize AppConfigValue `json:"dynamicBackgroundParticleSize" env:"DYNAMIC_BACKGROUND_PARTICLE_SIZE" public:"true"`
 	// Email
 	RequireUserEmail                           AppConfigValue `json:"requireUserEmail" env:"REQUIRE_USER_EMAIL" type:"bool" public:"true"`
 	SmtpHost                                   AppConfigValue `json:"smtpHost" env:"SMTP_HOST"`
@@ -131,6 +141,16 @@ func getDefaultConfig() *AppConfigModel {
 		SignupDefaultUserGroupIDs: "[]",
 		SignupDefaultCustomClaims: "[]",
 		AccentColor:               "default",
+		// Dynamic background
+		DynamicBackgroundEnabled:      "false",
+		DynamicBackgroundTheme:        "Neon",
+		DynamicBackgroundSeed:         "300177",
+		DynamicBackgroundDensity:      "0.0376",
+		DynamicBackgroundFlowSpeed:    "2.36",
+		DynamicBackgroundNoiseScale:   "0.015",
+		DynamicBackgroundTurbulence:   "8",
+		DynamicBackgroundTrailFade:    "0.355",
+		DynamicBackgroundParticleSize: "236",
 		// Email
 		RequireUserEmail:              "true",
 		SmtpHost:                      "",
