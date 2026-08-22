@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
-	"github.com/pocket-id/pocket-id/backend/internal/common"
+	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
@@ -47,7 +47,8 @@ func (s *authorizationService) resolveGrant(ctx context.Context, clientID, resou
 	if err != nil {
 		return "", nil, nil, err
 	}
-	return audience, grantedScopes, consentScopeKeys(audience, grantedScopes), nil
+
+	return audience, grantedScopes, consentKeysForGrant(audience, resource, grantedScopes), nil
 }
 
 type requestMeta struct {
@@ -119,7 +120,7 @@ func (s *authorizationService) authorize(ctx context.Context, input authorizeInp
 
 	// Reject authorization requests that require PAR when the request is not a resumed interaction and doesn't have a valid PAR
 	if client.RequiresPushedAuthorizationRequests && !input.hasPushedAuthorizationRequest && interactionSession == nil {
-		return authorizationResult{}, &common.OidcPARRequiredError{}
+		return authorizationResult{}, apperror.OidcPARRequired()
 	}
 
 	resource, err := input.requester.GetResource()
@@ -209,6 +210,9 @@ func (s *authorizationService) authorizeAuthenticated(ctx context.Context, req a
 		Preload("UserGroups").
 		First(&user, "id = ?", req.userID).
 		Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return authorizationResult{}, apperror.UserNotFound()
+	}
 	if err != nil {
 		return authorizationResult{}, err
 	}
@@ -510,6 +514,9 @@ func (s *authorizationService) switchInteractionSessionUser(ctx context.Context,
 
 func (s *authorizationService) getInteractionSession(ctx context.Context, interactionSessionID string) (interactionSessionForUser, error) {
 	interactionSession, err := s.interactionSessionService.get(ctx, interactionSessionID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return interactionSessionForUser{}, apperror.OidcInteractionNotFound()
+	}
 	if err != nil {
 		return interactionSessionForUser{}, err
 	}
@@ -578,6 +585,9 @@ func (s *authorizationService) completeInteractionStep(ctx context.Context, inte
 	err := withTx(ctx, s.db, func(ctx context.Context) error {
 		var err error
 		interactionSession, err = s.interactionSessionService.get(ctx, interactionSessionID)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return apperror.OidcInteractionNotFound()
+		}
 		if err != nil {
 			return err
 		}
@@ -599,7 +609,7 @@ func (s *authorizationService) completeInteractionStep(ctx context.Context, inte
 		}
 
 		if requiredSteps[0] != step {
-			return &common.ValidationError{Message: "expected interaction step " + string(requiredSteps[0]) + " but got " + string(step)}
+			return apperror.ValidationMessage("expected interaction step " + string(requiredSteps[0]) + " but got " + string(step))
 		}
 
 		if err := s.applyInteractionStep(ctx, &interactionSession, userID, step, reauthenticationToken, authenticationTime, meta); err != nil {
@@ -646,7 +656,7 @@ func (s *authorizationService) applyInteractionStep(ctx context.Context, interac
 	case interactionStepConsent:
 		return s.completeConsentStep(ctx, interactionSession, userID, meta)
 	default:
-		return &common.ValidationError{Message: "unknown interaction step " + string(step)}
+		return apperror.ValidationMessage("unknown interaction step " + string(step))
 	}
 }
 
@@ -655,7 +665,7 @@ func (s *authorizationService) completeReauthenticationStep(ctx context.Context,
 		return err
 	}
 	if reauthenticationToken == "" {
-		return &common.ValidationError{Message: "reauthentication token is required"}
+		return apperror.MissingField("reauthenticationToken")
 	}
 	reauthenticatedAt, err := s.reauth.ConsumeReauthenticationToken(ctx, dbFromContext(ctx, s.db), reauthenticationToken, userID)
 	if err != nil {
