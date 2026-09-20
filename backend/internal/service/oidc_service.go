@@ -13,8 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -26,6 +26,7 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	imageutil "github.com/pocket-id/pocket-id/backend/internal/utils/image"
+	jwkutils "github.com/pocket-id/pocket-id/backend/internal/utils/jwk"
 )
 
 const (
@@ -124,14 +125,15 @@ func (s *OidcService) ListClients(ctx context.Context, name string, listRequestO
 	query := s.db.
 		WithContext(ctx).
 		Preload("CreatedBy").
+		Preload("AllowedUserGroups").
 		Model(&model.OidcClient{})
 
 	if name != "" {
 		query = query.Where("name LIKE ?", "%"+name+"%")
 	}
 
-	// As allowedUserGroupsCount is not a column, we need to manually sort it
-	if listRequestOptions.Sort.Column == "allowedUserGroupsCount" && utils.IsValidSortDirection(listRequestOptions.Sort.Direction) {
+	// Sort the allowed user groups relation by its row count because it is not an OIDC client column
+	if listRequestOptions.Sort.Column == "allowedUserGroups" && utils.IsValidSortDirection(listRequestOptions.Sort.Direction) {
 		query = query.Select("oidc_clients.*, COUNT(oidc_clients_allowed_user_groups.oidc_client_id)").
 			Joins("LEFT JOIN oidc_clients_allowed_user_groups ON oidc_clients.id = oidc_clients_allowed_user_groups.oidc_client_id").
 			Group("oidc_clients.id").
@@ -152,9 +154,12 @@ func (s *OidcService) CreateClient(ctx context.Context, input dto.OidcClientCrea
 		},
 		CreatedByID: new(userID),
 	}
-	updateOIDCClientModelFromDto(&client, &input.OidcClientUpdateDto)
+	err := updateOIDCClientModelFromDto(&client, &input.OidcClientUpdateDto)
+	if err != nil {
+		return model.OidcClient{}, err
+	}
 
-	err := s.db.
+	err = s.db.
 		WithContext(ctx).
 		Create(&client).
 		Error
@@ -194,7 +199,10 @@ func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input d
 		return model.OidcClient{}, err
 	}
 
-	updateOIDCClientModelFromDto(&client, &input)
+	err = updateOIDCClientModelFromDto(&client, &input)
+	if err != nil {
+		return model.OidcClient{}, err
+	}
 
 	if !input.IsGroupRestricted {
 		// Clear allowed user groups if the restriction is removed
@@ -249,7 +257,7 @@ func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input d
 	return client, nil
 }
 
-func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClientUpdateDto) {
+func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClientUpdateDto) error {
 	// Update fields that remain locally managed for every client type
 	client.Description = input.Description
 	client.RequiresReauthentication = input.RequiresReauthentication
@@ -264,7 +272,7 @@ func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClien
 
 	// Preserve fields that are sourced from the client metadata document
 	if client.IsMetadataDocument() {
-		return
+		return nil
 	}
 
 	// Update registration fields for manually configured clients
@@ -280,17 +288,29 @@ func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClien
 	}
 
 	// Replace the federated credentials with the submitted configuration
-	client.Credentials.FederatedIdentities = make([]model.OidcClientFederatedIdentity, len(input.Credentials.FederatedIdentities))
+	federatedIdentities := make([]model.OidcClientFederatedIdentity, len(input.Credentials.FederatedIdentities))
 	for i, fi := range input.Credentials.FederatedIdentities {
-		client.Credentials.FederatedIdentities[i] = model.OidcClientFederatedIdentity{
+		// Validate the public keys before storing them
+		publicKeys, err := jwkutils.NormalizePublicKeys(fi.PublicKeys)
+		if err != nil {
+			return apperror.ValidationMessage(fmt.Sprintf("Federated client credential %d has an invalid public key: %v", i+1, err))
+		}
+		if len(publicKeys) > 0 && fi.JWKS != "" {
+			return apperror.ValidationMessage(fmt.Sprintf("Federated client credential %d must use either a JWKS URL or public keys, but not both", i+1))
+		}
+
+		federatedIdentities[i] = model.OidcClientFederatedIdentity{
 			Issuer:           fi.Issuer,
 			Audience:         fi.Audience,
 			Subject:          fi.Subject,
 			JWKS:             fi.JWKS,
+			PublicKeys:       publicKeys,
 			ReplayProtection: fi.ReplayProtection,
 		}
 	}
+	client.Credentials.FederatedIdentities = federatedIdentities
 
+	return nil
 }
 
 func (s *OidcService) DeleteClient(ctx context.Context, clientID string) error {
@@ -367,7 +387,7 @@ func (s *OidcService) CreateClientSecret(ctx context.Context, clientID string, i
 
 	// Only the hash and a short prefix are persisted, so this is the last time the value is available
 	secret := model.OidcClientSecret{
-		ID:        uuid.New().String(),
+		ID:        uuid.NewV4().String(),
 		Algorithm: model.OidcClientSecretHashSHA256,
 		Hash:      utils.CreateSha256Hash(clientSecret),
 		Prefix:    clientSecretPrefix(clientSecret),
@@ -495,6 +515,9 @@ func (s *OidcService) UpdateClientLogo(ctx context.Context, clientID string, fil
 	}
 	defer reader.Close()
 	strippedReader, err := imageutil.StripMetadata(reader, fileType)
+	if errors.Is(err, imageutil.ErrInvalidImage) {
+		return apperror.InvalidImage(err)
+	}
 	if err != nil {
 		return err
 	}
@@ -627,22 +650,6 @@ func (s *OidcService) UpdateAllowedUserGroups(ctx context.Context, id string, in
 		s.scimSyncScheduler.ScheduleSync(ctx)
 	}
 	return client, nil
-}
-
-func (s *OidcService) GetAllowedGroupsCountOfClient(ctx context.Context, id string) (int64, error) {
-	// We only perform select queries here, so we can rollback in all cases
-	tx := s.db.Begin()
-	defer func() {
-		tx.Rollback()
-	}()
-
-	client, err := s.getClientInternal(ctx, id, tx, false)
-	if err != nil {
-		return 0, err
-	}
-
-	count := tx.WithContext(ctx).Model(&client).Association("AllowedUserGroups").Count()
-	return count, nil
 }
 
 func (s *OidcService) ListAuthorizedClients(ctx context.Context, userID string, listRequestOptions utils.ListRequestOptions) ([]model.UserAuthorizedOidcClient, utils.PaginationResponse, error) {

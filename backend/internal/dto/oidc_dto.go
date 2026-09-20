@@ -1,6 +1,10 @@
 package dto
 
-import datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
+import (
+	"encoding/json"
+
+	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
+)
 
 type OidcClientMetaDataDto struct {
 	ID                       string  `json:"id"`
@@ -33,9 +37,9 @@ type OidcClientWithAllowedUserGroupsDto struct {
 	AllowedUserGroups []UserGroupMinimalDto `json:"allowedUserGroups"`
 }
 
-type OidcClientWithAllowedGroupsCountDto struct {
+type OidcClientWithAllowedGroupsDto struct {
 	OidcClientDto
-	AllowedUserGroupsCount int64 `json:"allowedUserGroupsCount"`
+	AllowedUserGroups []UserGroupMinimalDto `json:"allowedUserGroups"`
 }
 
 type OidcClientUpdateDto struct {
@@ -95,11 +99,12 @@ type OidcClientCredentialsDto struct {
 }
 
 type OidcClientFederatedIdentityDto struct {
-	Issuer           string `json:"issuer"`
-	Subject          string `json:"subject,omitempty"`
-	Audience         string `json:"audience,omitempty"`
-	JWKS             string `json:"jwks,omitempty"`
-	ReplayProtection bool   `json:"replayProtection"`
+	Issuer           string            `json:"issuer"`
+	Subject          string            `json:"subject,omitempty"`
+	Audience         string            `json:"audience,omitempty"`
+	JWKS             string            `json:"jwks,omitempty"`
+	PublicKeys       []json.RawMessage `json:"publicKeys,omitempty"`
+	ReplayProtection bool              `json:"replayProtection"`
 }
 
 type OidcUpdateAllowedUserGroupsDto struct {
