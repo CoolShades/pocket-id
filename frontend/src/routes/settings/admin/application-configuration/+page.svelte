@@ -6,10 +6,12 @@
 	import AppConfigService from '$lib/services/app-config-service';
 	import appConfigStore from '$lib/stores/application-configuration-store';
 	import type { AllAppConfig } from '$lib/types/application-configuration.type';
-	import { axiosErrorToast } from '$lib/utils/error-util';
 	import { LucideInfo } from '@lucide/svelte';
+<<<<<<< HEAD
 	import { toast } from 'svelte-sonner';
 	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
+=======
+>>>>>>> main
 	import AppConfigDynamicClientsForm from './forms/app-config-dynamic-clients-form.svelte';
 	import AppConfigEmailForm from './forms/app-config-email-form.svelte';
 	import AppConfigGeneralForm from './forms/app-config-general-form.svelte';
@@ -20,20 +22,17 @@
 
 	let { data } = $props();
 	let appConfig = $state(data.appConfig);
+	let persistedAppConfig = { ...data.appConfig };
 
 	const appConfigService = new AppConfigService();
 
 	async function updateAppConfig(updatedAppConfig: Partial<AllAppConfig>) {
-		appConfig = await appConfigService
-			.update({
-				...appConfig,
-				...updatedAppConfig
-			})
-			.catch((e) => {
-				axiosErrorToast(e);
-				throw e;
-			});
-		await appConfigStore.reload();
+		persistedAppConfig = await appConfigService.update({
+			...persistedAppConfig,
+			...updatedAppConfig
+		});
+
+		appConfigStore.set({ ...$appConfigStore, ...persistedAppConfig });
 	}
 
 	async function updateImages(
@@ -85,9 +84,7 @@
 			defaultProfilePicturePromise,
 			backgroundImagePromise,
 			faviconPromise
-		])
-			.then(() => toast.success(m.images_updated_successfully()))
-			.catch(axiosErrorToast);
+		]);
 	}
 </script>
 
