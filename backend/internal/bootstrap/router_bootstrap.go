@@ -124,6 +124,9 @@ func shouldTraceRequest(r *http.Request) bool {
 }
 
 func registerGlobalMiddleware(r *gin.Engine) {
+	if common.EnvConfig.CloudflareLocationHeaders {
+		r.Use(middleware.CloudflareLocationMiddleware())
+	}
 	r.Use(middleware.HeadMiddleware())
 	r.Use(middleware.NewCacheControlMiddleware().Add())
 	r.Use(middleware.NewCorsMiddleware().Add())
@@ -167,7 +170,7 @@ func registerRoutes(r *gin.Engine, db *gorm.DB, svc *services, rateLimitServices
 		rateLimitMiddleware.Add(middleware.RateLimitDeviceLoginExchange),
 		rateLimitMiddleware.Add(middleware.RateLimitDeviceLoginVerification),
 	)
-	controller.NewOidcController(apiGroup, authMiddleware, fileSizeLimitMiddleware, svc.oidcService)
+	controller.NewOidcController(apiGroup, authMiddleware, fileSizeLimitMiddleware, svc.oidcService, svc.appConfigService)
 	controller.NewUserController(apiGroup, authMiddleware, svc.appConfigService, svc.userService, svc.webauthnModule)
 	controller.NewAppConfigController(apiGroup, authMiddleware, svc.appConfigService, svc.emailModule)
 	svc.ldapSyncModule.RegisterRoutes(apiGroup, authMiddleware.Add())

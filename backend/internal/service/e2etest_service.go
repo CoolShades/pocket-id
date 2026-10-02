@@ -16,7 +16,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/italypaleale/francis/actor"
-	"github.com/italypaleale/francis/host/local"
+	francishost "github.com/italypaleale/francis/host"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
@@ -51,7 +51,7 @@ type LdapSyncer interface {
 
 type TestService struct {
 	db               *gorm.DB
-	actors           *local.Host
+	actors           francishost.Host
 	jwtService       *JwtService
 	appConfigService *appconfig.AppConfigService
 	ldapSyncer       LdapSyncer
@@ -69,7 +69,7 @@ const (
 	e2eEmailVerificationToken          = "2FZFSoupBdHyqIL65bWTsgCgHIhxlXup"
 )
 
-func NewTestService(db *gorm.DB, actors *local.Host, appConfigService *appconfig.AppConfigService, jwtService *JwtService, ldapSyncer LdapSyncer, fileStorage storage.FileStorage) (*TestService, error) {
+func NewTestService(db *gorm.DB, actors francishost.Host, appConfigService *appconfig.AppConfigService, jwtService *JwtService, ldapSyncer LdapSyncer, fileStorage storage.FileStorage) (*TestService, error) {
 	s := &TestService{
 		db:               db,
 		actors:           actors,
@@ -198,14 +198,15 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 				Base: model.Base{
 					ID: "3654a746-35d4-4321-ac61-0bdcff2b4055",
 				},
-				Name:               "Nextcloud",
-				Description:        "This is an example description for Nextcloud",
-				LaunchURL:          new("https://nextcloud.local"),
-				Credentials:        seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000001", "w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY"),
-				CallbackURLs:       datatype.StringList{"http://nextcloud.localhost/auth/callback"},
-				LogoutCallbackURLs: datatype.StringList{"http://nextcloud.localhost/auth/logout/callback"},
-				ImageType:          new("png"),
-				CreatedByID:        new(users[0].ID),
+				Name:                 "Nextcloud",
+				Description:          "This is an example description for Nextcloud",
+				LaunchURL:            new("https://nextcloud.local"),
+				Credentials:          seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000001", "w2mUeZISmEvIDMEDvpY0PnxQIpj1m3zY"),
+				CallbackURLs:         datatype.StringList{"http://nextcloud.localhost/auth/callback"},
+				LogoutCallbackURLs:   datatype.StringList{"http://nextcloud.localhost/auth/logout/callback"},
+				BackchannelLogoutURL: "http://host.docker.internal:18124/nextcloud",
+				ImageType:            new("png"),
+				CreatedByID:          new(users[0].ID),
 			},
 			{
 				Base: model.Base{
@@ -225,12 +226,13 @@ func (s *TestService) SeedDatabase(baseURL string) error {
 				Base: model.Base{
 					ID: "7c21a609-96b5-4011-9900-272b8d31a9d1",
 				},
-				Name:               "Tailscale",
-				Credentials:        seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000003", "n4VfQeXlTzA6yKpWbR9uJcMdSx2qH0Lo"),
-				CallbackURLs:       datatype.StringList{"http://tailscale.localhost/auth/callback"},
-				LogoutCallbackURLs: datatype.StringList{"http://tailscale.localhost/auth/logout/callback"},
-				IsGroupRestricted:  true,
-				CreatedByID:        new(users[0].ID),
+				Name:                 "Tailscale",
+				Credentials:          seededClientCredentials("2f1b8f1a-1d3e-4f0c-9c1a-000000000003", "n4VfQeXlTzA6yKpWbR9uJcMdSx2qH0Lo"),
+				CallbackURLs:         datatype.StringList{"http://tailscale.localhost/auth/callback"},
+				LogoutCallbackURLs:   datatype.StringList{"http://tailscale.localhost/auth/logout/callback"},
+				BackchannelLogoutURL: "http://host.docker.internal:18124/tailscale",
+				IsGroupRestricted:    true,
+				CreatedByID:          new(users[0].ID),
 				AllowedUserGroups: []model.UserGroup{
 					userGroups[0],
 				},

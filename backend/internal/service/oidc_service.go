@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
+	"github.com/pocket-id/pocket-id/backend/internal/backchannellogout"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
@@ -45,6 +47,7 @@ type OidcService struct {
 	previewBuilder    oidcClientPreviewBuilder
 	metadataRefresher metadataRefresher
 	scimSyncScheduler ScimSyncScheduler
+	backchannelLogout *backchannellogout.Service
 
 	httpClient  *http.Client
 	fileStorage storage.FileStorage
@@ -64,6 +67,7 @@ func NewOidcService(
 	previewBuilder oidcClientPreviewBuilder,
 	metadataRefresher metadataRefresher,
 	scimSyncScheduler ScimSyncScheduler,
+	backchannelLogout *backchannellogout.Service,
 	httpClient *http.Client,
 	fileStorage storage.FileStorage,
 ) (s *OidcService, err error) {
@@ -73,6 +77,7 @@ func NewOidcService(
 		previewBuilder:    previewBuilder,
 		metadataRefresher: metadataRefresher,
 		scimSyncScheduler: scimSyncScheduler,
+		backchannelLogout: backchannelLogout,
 		httpClient:        httpClient,
 		fileStorage:       fileStorage,
 	}
@@ -147,7 +152,7 @@ func (s *OidcService) ListClients(ctx context.Context, name string, listRequestO
 	return clients, response, err
 }
 
-func (s *OidcService) CreateClient(ctx context.Context, input dto.OidcClientCreateDto, userID string) (model.OidcClient, error) {
+func (s *OidcService) CreateClient(ctx context.Context, input dto.OidcClientCreateDto, userID string, autoCreateSecret bool) (model.OidcClient, string, error) {
 	client := model.OidcClient{
 		Base: model.Base{
 			ID: input.ID,
@@ -156,7 +161,18 @@ func (s *OidcService) CreateClient(ctx context.Context, input dto.OidcClientCrea
 	}
 	err := updateOIDCClientModelFromDto(&client, &input.OidcClientUpdateDto)
 	if err != nil {
-		return model.OidcClient{}, err
+		return model.OidcClient{}, "", err
+	}
+
+	// Generate the initial credential before saving so a failed generation cannot leave a client without its expected secret
+	var createdSecret string
+	if autoCreateSecret && !client.IsPublic {
+		secret, value, err := newOIDCClientSecret(dto.OidcClientSecretCreateDto{})
+		if err != nil {
+			return model.OidcClient{}, "", err
+		}
+		client.Credentials.Secrets = append(client.Credentials.Secrets, secret)
+		createdSecret = value
 	}
 
 	err = s.db.
@@ -165,27 +181,27 @@ func (s *OidcService) CreateClient(ctx context.Context, input dto.OidcClientCrea
 		Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
-			return model.OidcClient{}, apperror.ClientIDAlreadyExists()
+			return model.OidcClient{}, "", apperror.ClientIDAlreadyExists()
 		}
-		return model.OidcClient{}, err
+		return model.OidcClient{}, "", err
 	}
 
 	// All storage operations must be executed outside of a transaction
 	if input.LogoURL != nil {
 		err = s.downloadAndSaveLogoFromURL(ctx, client.ID, *input.LogoURL, true)
 		if err != nil {
-			return model.OidcClient{}, fmt.Errorf("failed to download logo: %w", err)
+			return model.OidcClient{}, "", fmt.Errorf("failed to download logo: %w", err)
 		}
 	}
 
 	if input.DarkLogoURL != nil {
 		err = s.downloadAndSaveLogoFromURL(ctx, client.ID, *input.DarkLogoURL, false)
 		if err != nil {
-			return model.OidcClient{}, fmt.Errorf("failed to download dark logo: %w", err)
+			return model.OidcClient{}, "", fmt.Errorf("failed to download dark logo: %w", err)
 		}
 	}
 
-	return client, nil
+	return client, createdSecret, nil
 }
 
 func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input dto.OidcClientUpdateDto) (model.OidcClient, error) {
@@ -198,6 +214,7 @@ func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input d
 	if err != nil {
 		return model.OidcClient{}, err
 	}
+	wasGroupRestricted := client.IsGroupRestricted
 
 	err = updateOIDCClientModelFromDto(&client, &input)
 	if err != nil {
@@ -237,6 +254,11 @@ func (s *OidcService) UpdateClient(ctx context.Context, clientID string, input d
 	err = tx.Commit().Error
 	if err != nil {
 		return model.OidcClient{}, err
+	}
+
+	// Turning on the group restriction revokes access for every authorized user until groups are assigned, so tell their clients to end the sessions
+	if s.backchannelLogout != nil && !wasGroupRestricted && client.IsGroupRestricted {
+		s.backchannelLogout.NotifyLostGroupAccess(ctx, nil, client.ID)
 	}
 
 	// All storage operations must be executed outside of a transaction
@@ -279,6 +301,7 @@ func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClien
 	client.Name = input.Name
 	client.CallbackURLs = input.CallbackURLs
 	client.LogoutCallbackURLs = input.LogoutCallbackURLs
+	client.BackchannelLogoutURL = input.BackchannelLogoutURL
 	client.IsPublic = input.IsPublic
 	// PKCE is required for public clients
 	client.PkceEnabled = input.IsPublic || input.PkceEnabled
@@ -314,8 +337,24 @@ func updateOIDCClientModelFromDto(client *model.OidcClient, input *dto.OidcClien
 }
 
 func (s *OidcService) DeleteClient(ctx context.Context, clientID string) error {
+	tx := s.db.Begin()
+	defer func() {
+		tx.Rollback()
+	}()
+
+	// The authorizations cascade away with the client, so the users to notify must be resolved inside the transaction
+	notifyLogout := func() {}
+	if s.backchannelLogout != nil {
+		var prepareErr error
+		notifyLogout, prepareErr = s.backchannelLogout.PrepareClientNotifications(ctx, tx, clientID)
+		if prepareErr != nil {
+			// Notifications are best effort and must never block the deletion itself
+			slog.ErrorContext(ctx, "Failed to prepare back-channel logout notifications for client", slog.String("clientId", clientID), slog.Any("error", prepareErr))
+		}
+	}
+
 	var client model.OidcClient
-	result := s.db.
+	result := tx.
 		WithContext(ctx).
 		Where("id = ?", clientID).
 		Clauses(clause.Returning{}).
@@ -326,6 +365,14 @@ func (s *OidcService) DeleteClient(ctx context.Context, clientID string) error {
 	if result.RowsAffected == 0 {
 		return apperror.NotFound("OIDC client")
 	}
+
+	err := tx.Commit().Error
+	if err != nil {
+		return err
+	}
+
+	// The deleted client keeps serving its signed-in users, so tell it to end their sessions
+	notifyLogout()
 
 	// Delete images if present
 	// Note that storage operations must be done outside of a transaction
@@ -376,23 +423,9 @@ func (s *OidcService) CreateClientSecret(ctx context.Context, clientID string, i
 		return model.OidcClientSecret{}, "", apperror.ValidationMessage(fmt.Sprintf("A client cannot have more than %d secrets", model.MaxOidcClientSecrets))
 	}
 
-	// Callers may supply their own value, otherwise one with enough entropy is generated here
-	clientSecret := input.Secret
-	if clientSecret == "" {
-		clientSecret, err = utils.GenerateRandomAlphanumericString(32)
-		if err != nil {
-			return model.OidcClientSecret{}, "", fmt.Errorf("failed to generate client secret: %w", err)
-		}
-	}
-
-	// Only the hash and a short prefix are persisted, so this is the last time the value is available
-	secret := model.OidcClientSecret{
-		ID:        uuid.NewV4().String(),
-		Algorithm: model.OidcClientSecretHashSHA256,
-		Hash:      utils.CreateSha256Hash(clientSecret),
-		Prefix:    clientSecretPrefix(clientSecret),
-		CreatedAt: datatype.DateTime(time.Now()),
-		ExpiresAt: input.ExpiresAt,
+	secret, clientSecret, err := newOIDCClientSecret(input)
+	if err != nil {
+		return model.OidcClientSecret{}, "", err
 	}
 	client.Credentials.Secrets = append(client.Credentials.Secrets, secret)
 
@@ -411,6 +444,28 @@ func (s *OidcService) CreateClientSecret(ctx context.Context, clientID string, i
 		return model.OidcClientSecret{}, "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return secret, clientSecret, nil
+}
+
+// newOIDCClientSecret keeps the generated value transient while persisting only its hash and prefix
+func newOIDCClientSecret(input dto.OidcClientSecretCreateDto) (model.OidcClientSecret, string, error) {
+	clientSecret := input.Secret
+	if clientSecret == "" {
+		var err error
+		clientSecret, err = utils.GenerateRandomAlphanumericString(32)
+		if err != nil {
+			return model.OidcClientSecret{}, "", fmt.Errorf("failed to generate client secret: %w", err)
+		}
+	}
+
+	secret := model.OidcClientSecret{
+		ID:        uuid.NewV4().String(),
+		Algorithm: model.OidcClientSecretHashSHA256,
+		Hash:      utils.CreateSha256Hash(clientSecret),
+		Prefix:    clientSecretPrefix(clientSecret),
+		CreatedAt: datatype.DateTime(time.Now()),
+		ExpiresAt: input.ExpiresAt,
+	}
 	return secret, clientSecret, nil
 }
 
@@ -649,6 +704,12 @@ func (s *OidcService) UpdateAllowedUserGroups(ctx context.Context, id string, in
 	if s.scimSyncScheduler != nil {
 		s.scimSyncScheduler.ScheduleSync(ctx)
 	}
+
+	// Notify users who authorized this client but are no longer in any allowed group
+	if s.backchannelLogout != nil && client.IsGroupRestricted {
+		s.backchannelLogout.NotifyLostGroupAccess(ctx, nil, client.ID)
+	}
+
 	return client, nil
 }
 
@@ -711,6 +772,16 @@ func (s *OidcService) RevokeAuthorizedClient(ctx context.Context, userID string,
 		return err
 	}
 
+	// The authorization is gone after the delete, so the client to notify must be resolved inside the transaction
+	notifyLogout := func() {}
+	if s.backchannelLogout != nil {
+		notifyLogout, err = s.backchannelLogout.PrepareAuthorizationNotification(ctx, tx, userID, clientID)
+		if err != nil {
+			// Notifications are best effort and must never block the revocation itself
+			slog.ErrorContext(ctx, "Failed to prepare back-channel logout notification for authorization", slog.String("userId", userID), slog.String("clientId", clientID), slog.Any("error", err))
+		}
+	}
+
 	err = tx.WithContext(ctx).Delete(&authorizedClient).Error
 	if err != nil {
 		return err
@@ -724,6 +795,9 @@ func (s *OidcService) RevokeAuthorizedClient(ctx context.Context, userID string,
 	if err != nil {
 		return err
 	}
+
+	// Tell the client to end the user's session there as well
+	notifyLogout()
 
 	return nil
 }

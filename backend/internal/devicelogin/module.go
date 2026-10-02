@@ -6,11 +6,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/italypaleale/francis/host/local"
+	francishost "github.com/italypaleale/francis/host"
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
+	"github.com/pocket-id/pocket-id/backend/internal/iplocation"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 )
 
@@ -27,19 +28,15 @@ type AuditLogger interface {
 	DeviceStringFromUserAgent(userAgent string) string
 }
 
-type IPLocationResolver interface {
-	GetLocationByIP(ctx context.Context, ipAddress string) (country string, city string, err error)
-}
-
 type Dependencies struct {
 	DB      *gorm.DB
-	Actors  *local.Host
+	Actors  francishost.Host
 	BaseURL string
 
 	Signer    TokenService
 	Reauth    ReauthenticationTokenConsumer
 	AuditLog  AuditLogger
-	IPLocator IPLocationResolver
+	IPLocator iplocation.Resolver
 	AppConfig appconfig.AppConfigResolver
 }
 

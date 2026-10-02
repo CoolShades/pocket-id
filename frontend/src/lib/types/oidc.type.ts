@@ -54,6 +54,7 @@ export type OidcDiscoveryConfiguration = {
 export type OidcClient = OidcClientMetaData & {
 	callbackURLs: string[];
 	logoutCallbackURLs: string[];
+	backchannelLogoutURL: string;
 	isPublic: boolean;
 	pkceEnabled: boolean;
 	requiresReauthentication: boolean;
@@ -65,6 +66,10 @@ export type OidcClient = OidcClientMetaData & {
 	pkceSupported: boolean;
 	accessTokenDurationMinutes: number;
 	refreshTokenDurationMinutes: number;
+};
+
+export type OidcClientCreated = OidcClient & {
+	createdSecret?: OidcClientSecretCreated;
 };
 
 export type OidcClientTokenLifetimes = Pick<

@@ -5,17 +5,19 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/italypaleale/francis/host/local"
+	francishost "github.com/italypaleale/francis/host"
 	"github.com/pocket-id/pocket-id/backend/internal/api"
 	"github.com/pocket-id/pocket-id/backend/internal/apikey"
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
+	"github.com/pocket-id/pocket-id/backend/internal/backchannellogout"
 	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/devicelogin"
 	"github.com/pocket-id/pocket-id/backend/internal/email"
 	"github.com/pocket-id/pocket-id/backend/internal/emailverification"
 	"github.com/pocket-id/pocket-id/backend/internal/environment"
 	"github.com/pocket-id/pocket-id/backend/internal/geolite"
+	"github.com/pocket-id/pocket-id/backend/internal/iplocation"
 	"github.com/pocket-id/pocket-id/backend/internal/ldapsync"
 	"github.com/pocket-id/pocket-id/backend/internal/oidc"
 	"github.com/pocket-id/pocket-id/backend/internal/onetimeaccess"
@@ -32,6 +34,7 @@ type services struct {
 	appImagesService   *service.AppImagesService
 	emailModule        *email.Module
 	geoLiteModule      *geolite.Module
+	ipLocator          iplocation.Resolver
 	auditLogService    *service.AuditLogService
 	jwtService         *service.JwtService
 	userService        *service.UserService
@@ -52,7 +55,7 @@ type services struct {
 	emailVerificationModule *emailverification.Module
 	apiModule               *api.Module
 	environmentModule       *environment.Module
-	actors                  *local.Host
+	actors                  francishost.Host
 }
 
 // Initializes all services
@@ -60,7 +63,7 @@ func initServices(
 	ctx context.Context,
 	db *gorm.DB,
 	instanceID string,
-	actors *local.Host,
+	actors francishost.Host,
 	httpClient *http.Client,
 	imageExtensions map[string]string,
 	fileStorage storage.FileStorage,
@@ -83,17 +86,13 @@ func initServices(
 		return nil, fmt.Errorf("failed to create email module: %w", err)
 	}
 
-	svc.geoLiteModule, err = geolite.New(ctx, geolite.Dependencies{
-		HTTPClient:  httpClient,
-		DBPath:      common.EnvConfig.GeoLiteDBPath,
-		DownloadURL: common.EnvConfig.GeoLiteDBUrl,
-		LicenseKey:  common.EnvConfig.MaxMindLicenseKey,
-	})
+	// Select the location provider once so all consumers use the configured implementation
+	svc.ipLocator, svc.geoLiteModule, err = initIPLocationResolver(ctx, httpClient, &common.EnvConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create GeoLite module: %w", err)
+		return nil, fmt.Errorf("failed to create IP location resolver: %w", err)
 	}
 
-	svc.auditLogService = service.NewAuditLogService(db, svc.emailModule, svc.geoLiteModule, svc.appConfigService)
+	svc.auditLogService = service.NewAuditLogService(db, svc.emailModule, svc.ipLocator, svc.appConfigService)
 	svc.auditLogsModule, err = auditlogs.New(auditlogs.Dependencies{
 		DB:            db,
 		Actors:        actors,
@@ -131,7 +130,7 @@ func initServices(
 		Signer:    svc.jwtService,
 		Reauth:    svc.webauthnModule,
 		AuditLog:  svc.auditLogService,
-		IPLocator: svc.geoLiteModule,
+		IPLocator: svc.ipLocator,
 		AppConfig: svc.appConfigService,
 	})
 	if err != nil {
@@ -174,23 +173,29 @@ func initServices(
 		return nil, fmt.Errorf("failed to create OIDC module: %w", err)
 	}
 
-	svc.oidcService, err = service.NewOidcService(db, svc.jwtService, svc.oidcModule.Preview, svc.oidcModule, svc.scimSyncModule, httpClient, fileStorage)
+	backchannelLogoutService, err := backchannellogout.NewService(db, svc.jwtService, httpClient, actors)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create back-channel logout service: %w", err)
+	}
+
+	svc.oidcService, err = service.NewOidcService(db, svc.jwtService, svc.oidcModule.Preview, svc.oidcModule, svc.scimSyncModule, backchannelLogoutService, httpClient, fileStorage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OIDC service: %w", err)
 	}
 
-	svc.userGroupService = service.NewUserGroupService(db, svc.scimSyncModule)
-	svc.userService = service.NewUserService(db, svc.jwtService, svc.auditLogService, svc.customClaimService, svc.appImagesService, svc.scimSyncModule, fileStorage)
+	svc.userGroupService = service.NewUserGroupService(db, svc.scimSyncModule, backchannelLogoutService)
+	svc.userService = service.NewUserService(db, svc.jwtService, svc.auditLogService, svc.customClaimService, svc.appImagesService, svc.scimSyncModule, backchannelLogoutService, fileStorage)
 
 	svc.ldapSyncModule, err = ldapsync.New(ldapsync.Dependencies{
-		DB:          db,
-		Actors:      actors,
-		HTTPClient:  httpClient,
-		FileStorage: fileStorage,
-		Users:       svc.userService,
-		Groups:      svc.userGroupService,
-		AppConfig:   svc.appConfigService,
-		ScimSync:    svc.scimSyncModule,
+		DB:                db,
+		Actors:            actors,
+		HTTPClient:        httpClient,
+		FileStorage:       fileStorage,
+		Users:             svc.userService,
+		Groups:            svc.userGroupService,
+		AppConfig:         svc.appConfigService,
+		ScimSync:          svc.scimSyncModule,
+		BackchannelLogout: backchannelLogoutService,
 		// Disable in test environment
 		ScheduleDisabled: common.EnvConfig.AppEnv.IsTest(),
 	})
@@ -254,4 +259,22 @@ func initServices(
 	})
 
 	return svc, nil
+}
+
+func initIPLocationResolver(ctx context.Context, httpClient *http.Client, config *common.EnvConfigSchema) (iplocation.Resolver, *geolite.Module, error) {
+	// Cloudflare locations need no database initialization or background refresh
+	if config.CloudflareLocationHeaders {
+		return iplocation.NewCloudflareResolver(), nil, nil
+	}
+
+	module, err := geolite.New(ctx, geolite.Dependencies{
+		HTTPClient:  httpClient,
+		DBPath:      config.GeoLiteDBPath,
+		DownloadURL: config.GeoLiteDBUrl,
+		LicenseKey:  config.MaxMindLicenseKey,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return module, module, nil
 }

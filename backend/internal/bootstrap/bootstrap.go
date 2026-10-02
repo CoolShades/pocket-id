@@ -10,7 +10,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	"github.com/italypaleale/francis/components"
-	"github.com/italypaleale/francis/host/local"
+	francishost "github.com/italypaleale/francis/host"
 	"github.com/italypaleale/go-kit/servicerunner"
 	"gorm.io/gorm"
 
@@ -103,8 +103,8 @@ func Bootstrap(ctx context.Context) error {
 	// Migrate the pre-actor signup tokens into their actors, once the actor host is ready
 	services = append(services, actorsReady.Await(svc.userSignUpModule.RunSignupTokenMigration))
 
-	// These services are only registered in non-test mode
-	if common.EnvConfig.AppEnv != "test" {
+	// Only the GeoLite provider needs a background database refresher
+	if !common.EnvConfig.AppEnv.IsTest() && svc.geoLiteModule != nil {
 		// Refresh the GeoLite database (this is cached per each replica)
 		services = append(services, svc.geoLiteModule.Run)
 	}
@@ -137,7 +137,7 @@ func Bootstrap(ctx context.Context) error {
 }
 
 // actorsRunServiceFn wraps the actor host's Run method in a background service and returns a "ready" signal that other services can wait on
-func actorsRunServiceFn(actors *local.Host) (servicerunner.Service, *servicerunner.Ready) {
+func actorsRunServiceFn(actors francishost.Host) (servicerunner.Service, *servicerunner.Ready) {
 	actorsReady := servicerunner.NewReady()
 	fn := func(ctx context.Context) error {
 		runErrCh := make(chan error, 1)
