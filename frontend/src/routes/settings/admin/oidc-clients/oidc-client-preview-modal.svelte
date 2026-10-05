@@ -1,20 +1,20 @@
 <script lang="ts">
-	import CopyToClipboard from '$lib/components/copy-to-clipboard.svelte';
-	import MultiSelect from '$lib/components/form/multi-select.svelte';
-	import SearchableSelect from '$lib/components/form/searchable-select.svelte';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import * as Dialog from '$lib/components/ui/dialog';
-	import * as Field from '$lib/components/ui/field';
-	import { Spinner } from '$lib/components/ui/spinner';
-	import * as Tabs from '$lib/components/ui/tabs';
-	import { m } from '$lib/paraglide/messages';
-	import OidcService from '$lib/services/oidc-service';
-	import UserService from '$lib/services/user-service';
-	import type { User } from '$lib/types/user.type';
-	import { debounced } from '$lib/utils/debounce-util';
-	import { getAxiosErrorMessage } from '$lib/utils/error-util';
-	import { cn } from '$lib/utils/style';
+	import CopyToClipboard from '#lib/components/copy-to-clipboard.svelte';
+	import MultiSelect from '#lib/components/form/multi-select.svelte';
+	import SearchableSelect from '#lib/components/form/searchable-select.svelte';
+	import { Badge } from '#lib/components/ui/badge/index.ts';
+	import { Button } from '#lib/components/ui/button/index.ts';
+	import * as Dialog from '#lib/components/ui/dialog/index.ts';
+	import * as Field from '#lib/components/ui/field/index.ts';
+	import { Spinner } from '#lib/components/ui/spinner/index.ts';
+	import * as Tabs from '#lib/components/ui/tabs/index.ts';
+	import { m } from '#lib/paraglide/messages.js';
+	import OidcService from '#lib/services/oidc-service.ts';
+	import UserService from '#lib/services/user-service.ts';
+	import type { User } from '#lib/types/user.type.ts';
+	import { debounced } from '#lib/utils/debounce-util.ts';
+	import { getAxiosErrorMessage } from '#lib/utils/error-util.ts';
+	import { cn } from '#lib/utils/style.ts';
 	import { LucideBraces, LucideCopy, LucideList } from '@lucide/svelte';
 
 	type Claims = Record<string, unknown>;
@@ -123,7 +123,7 @@
 			{/each}
 		</div>
 	{:else if value !== null && typeof value === 'object'}
-		<pre class="font-mono text-xs whitespace-pre-wrap break-all">{JSON.stringify(
+		<pre class="font-mono text-xs break-all whitespace-pre-wrap">{JSON.stringify(
 				value,
 				null,
 				2
@@ -183,7 +183,7 @@
 		<div class="flex min-h-0 flex-1 flex-col gap-3">
 			<div class="flex items-center justify-between gap-3 border-b">
 				<!-- The token tabs scroll on narrow screens so the view toggle and copy button stay inside the dialog -->
-				<Tabs.Root bind:value={activeTab} class="min-w-0 overflow-x-auto [scrollbar-width:none]">
+				<Tabs.Root bind:value={activeTab} class="min-w-0 [scrollbar-width:none] overflow-x-auto">
 					<Tabs.List variant="line">
 						<Tabs.Trigger value="idToken">{m.id_token()}</Tabs.Trigger>
 						<Tabs.Trigger value="accessToken">{m.access_token()}</Tabs.Trigger>
@@ -231,7 +231,7 @@
 						<Spinner class="size-6" />
 					</div>
 				{:else if view === 'json'}
-					<pre class="p-4 font-mono text-xs whitespace-pre-wrap break-all">{JSON.stringify(
+					<pre class="p-4 font-mono text-xs break-all whitespace-pre-wrap">{JSON.stringify(
 							activeData,
 							null,
 							2
