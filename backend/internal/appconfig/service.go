@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -134,6 +135,11 @@ func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppCon
 		}
 	}
 
+	// Validate the dynamic background parameters
+	if err := validateDynamicBackground(input); err != nil {
+		return nil, err
+	}
+
 	// Replace the entire config by invoking the actor
 	cfg, err := s.invokeConfigActor(ctx, "replace", input)
 	if err != nil {
@@ -142,6 +148,42 @@ func (s *AppConfigService) UpdateAppConfig(ctx context.Context, input dto.AppCon
 
 	// Return the updated config
 	return cfg.ToAppConfigVariableSlice(true, false), nil
+}
+
+// validateDynamicBackground enforces bounds on the dynamic background parameters.
+// The DTO's binding tags ensure the values are numeric strings; this function
+// keeps them within the ranges offered by the admin UI so that an API caller
+// cannot request, for example, an unbounded number of particles.
+//
+// An empty value is left alone: AppConfigModel.Replace resets it to the default.
+func validateDynamicBackground(input dto.AppConfigUpdateDto) error {
+	checks := []struct {
+		key   string
+		value string
+		min   float64
+		max   float64
+	}{
+		{"dynamicBackgroundDensity", input.DynamicBackgroundDensity, 0.0001, 0.2},
+		{"dynamicBackgroundFlowSpeed", input.DynamicBackgroundFlowSpeed, 0.01, 10},
+		{"dynamicBackgroundNoiseScale", input.DynamicBackgroundNoiseScale, 0.0001, 0.05},
+		{"dynamicBackgroundTurbulence", input.DynamicBackgroundTurbulence, 1, 30},
+		{"dynamicBackgroundTrailFade", input.DynamicBackgroundTrailFade, 0.005, 0.9},
+		{"dynamicBackgroundParticleSize", input.DynamicBackgroundParticleSize, 0.5, 1000},
+	}
+	for _, c := range checks {
+		if c.value == "" {
+			continue
+		}
+
+		v, err := strconv.ParseFloat(c.value, 64)
+		if err != nil {
+			return apperror.InvalidField(c.key, "invalid_format", "must be numeric")
+		}
+		if v < c.min || v > c.max {
+			return apperror.InvalidField(c.key, "invalid_value", fmt.Sprintf("must be between %v and %v", c.min, c.max))
+		}
+	}
+	return nil
 }
 
 // UpdateAppConfigValues updates the provided application configuration values.
