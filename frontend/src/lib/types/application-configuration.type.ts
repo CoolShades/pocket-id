@@ -15,6 +15,14 @@ export type AppConfig = {
 	requireUserEmail: boolean;
 	tracingEnabled: boolean;
 	iconLibrary: 'default' | 'custom' | 'disabled';
+	dynamicBackgroundEnabled: boolean;
+	dynamicBackgroundTheme: string;
+	dynamicBackgroundDensity: number;
+	dynamicBackgroundFlowSpeed: number;
+	dynamicBackgroundNoiseScale: number;
+	dynamicBackgroundTurbulence: number;
+	dynamicBackgroundTrailFade: number;
+	dynamicBackgroundParticleSize: number;
 };
 
 export type AllAppConfig = AppConfig & {

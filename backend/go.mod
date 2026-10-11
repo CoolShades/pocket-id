@@ -1,6 +1,6 @@
 module github.com/pocket-id/pocket-id/backend
 
-go 1.27.3
+go 1.27.1
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.47.2
@@ -22,9 +22,9 @@ require (
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/go-webauthn/webauthn v0.18.2
 	github.com/golang-migrate/migrate/v4 v4.20.1
-	github.com/italypaleale/francis v0.1.1
-	github.com/italypaleale/go-kit v1.2.5
-	github.com/italypaleale/go-sql-utils v0.3.11
+	github.com/italypaleale/francis v0.1.0
+	github.com/italypaleale/go-kit v1.2.4
+	github.com/italypaleale/go-sql-utils v0.3.10
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jinzhu/copier v0.4.0
 	github.com/joho/godotenv v1.5.1
