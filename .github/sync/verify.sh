@@ -9,17 +9,21 @@ export CI=true   # pnpm refuses to rebuild node_modules without a TTY otherwise
 rc=0
 run() {
   echo "::group::$1"; shift
-  if "$@"; then echo "::endgroup::"; return 0; fi
-  local r=$?; echo "::endgroup::"; echo "::error::verify: '$*' failed (exit $r)"; rc=1; return $r
+  local r=0; "$@" || r=$?
+  echo "::endgroup::"
+  [ $r -eq 0 ] || { echo "::error::verify: '$*' failed (exit $r)"; rc=1; }
+  return $r
 }
 if git grep -lE '^(<<<<<<<|>>>>>>>) ' -- backend frontend tests .github; then
   echo "::error::verify: conflict markers present"; rc=1
 fi
-run "go build"      go -C backend build ./... \
-  && run "go test"  go -C backend test -tags=exclude_frontend,unit ./...
+# Frontend first: the Go binary embeds backend/frontend/dist, so `go build`
+# without -tags=exclude_frontend needs it to exist.
 run "pnpm install"        pnpm install --frozen-lockfile \
   && run "frontend build" pnpm -C frontend run build \
   && run "svelte-check"   pnpm -C frontend run check
+run "go build"      go -C backend build ./... \
+  && run "go test"  go -C backend test -tags=exclude_frontend,unit ./...
 # The fork image is what actually ships: prove the Dockerfiles still build from our context.
 if [ $rc -eq 0 ] && command -v docker >/dev/null 2>&1; then
   ARCH=$(go env GOARCH)
