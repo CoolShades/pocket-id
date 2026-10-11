@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
-# Ask Claude Code to repair the working tree during an upstream sync.
-#   claude-assist.sh conflicts <tag> <file>...   resolve markers left by `git rebase`
-#   claude-assist.sh verify    <tag> <logfile>   make verify.sh pass
-# Exit 3 when Claude Code cannot run (no CLI, no credentials); callers fall back
-# to asking a human. Any other non-zero exit means Claude ran but gave up.
+# Ask a coding agent to repair the working tree during an upstream sync.
+#   ai-assist.sh conflicts <tag> <file>...   resolve markers left by `git rebase`
+#   ai-assist.sh verify    <tag> <logfile>   make verify.sh pass
+#
+# SYNC_AGENT=opencode (default)  OpenCode `run` against the fork's own model:
+#     provider hpc-qwen/flash-next = Qwen Flash-Next on coolshades-hpc (vLLM),
+#     reachable from the glados self-hosted runner over the tailnet.
+#     Needs HPC_QWEN_BASE_URL + HPC_QWEN_API_KEY (see opencode.json).
+# SYNC_AGENT=claude              Claude Code `-p` (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN).
+#
+# Exit 3 when the agent cannot run (CLI missing); callers fall back to a human.
+# Any other non-zero exit means the agent ran but gave up.
 set -euo pipefail
 MODE=${1:?mode}; TAG=${2:?tag}; shift 2
+HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
-command -v claude >/dev/null || { echo "claude-assist: claude CLI not installed" >&2; exit 3; }
-# Credentials: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in CI, or a local `claude` login.
+AGENT=${SYNC_AGENT:-opencode}
+case "$AGENT" in
+  opencode) command -v opencode >/dev/null || { echo "ai-assist: opencode CLI not installed" >&2; exit 3; } ;;
+  claude)   command -v claude   >/dev/null || { echo "ai-assist: claude CLI not installed" >&2; exit 3; } ;;
+  *) echo "ai-assist: unknown SYNC_AGENT=$AGENT" >&2; exit 1 ;;
+esac
 
 CONTEXT="You are running unattended inside a CI job for a fork of pocket-id (https://github.com/pocket-id/pocket-id).
 The fork carries ONE feature on top of upstream: a configurable, animated 'dynamic background' for the
@@ -41,6 +53,7 @@ Context you can use: 'git diff REBASE_HEAD^ REBASE_HEAD -- <file>' shows the fea
 change to a file; 'git show HEAD:<file>' shows upstream's version. All files touched by this commit:
 $TOUCHED"
     ALLOWED=(Read Edit Write Grep Glob "Bash(git diff:*)" "Bash(git show:*)" "Bash(git log:*)" "Bash(git status:*)" "Bash(git grep:*)")
+    OC_BASH='{"*":"deny","git diff *":"allow","git show *":"allow","git log *":"allow","git status*":"allow","git grep *":"allow","cat *":"allow","sed -n *":"allow","head *":"allow","tail *":"allow"}'
     ;;
   verify)
     LOG=${1:?logfile}
@@ -58,15 +71,31 @@ $FEATURE_FILES
 Re-run the failing check yourself to confirm (e.g. 'go -C backend build ./...', 'go -C backend test -tags=exclude_frontend,unit ./internal/...',
 'pnpm -C frontend run check'). Run '.github/sync/verify.sh' at the end."
     ALLOWED=(Read Edit Write Grep Glob "Bash(git diff:*)" "Bash(git show:*)" "Bash(git log:*)" "Bash(git status:*)" "Bash(git grep:*)" "Bash(go:*)" "Bash(pnpm:*)" "Bash(.github/sync/verify.sh:*)")
+    OC_BASH='{"*":"deny","git diff *":"allow","git show *":"allow","git log *":"allow","git status*":"allow","git grep *":"allow","cat *":"allow","sed -n *":"allow","head *":"allow","tail *":"allow","go *":"allow","pnpm *":"allow",".github/sync/verify.sh*":"allow"}'
     ;;
   *) echo "claude-assist: unknown mode $MODE" >&2; exit 1 ;;
 esac
 
-echo "claude-assist: mode=$MODE tag=$TAG"
-claude -p "$PROMPT" \
-  --tools "Read,Edit,Write,Grep,Glob,Bash" \
-  --allowedTools "${ALLOWED[@]}" \
-  --strict-mcp-config \
-  --no-session-persistence \
-  --max-budget-usd "${CLAUDE_ASSIST_BUDGET_USD:-10}" \
-  --output-format text < /dev/null
+echo "ai-assist: agent=$AGENT mode=$MODE tag=$TAG"
+case "$AGENT" in
+  claude)
+    claude -p "$PROMPT" \
+      --tools "Read,Edit,Write,Grep,Glob,Bash" \
+      --allowedTools "${ALLOWED[@]}" \
+      --strict-mcp-config \
+      --no-session-persistence \
+      --max-budget-usd "${CLAUDE_ASSIST_BUDGET_USD:-10}" \
+      --output-format text < /dev/null
+    ;;
+  opencode)
+    : "${HPC_QWEN_BASE_URL:?set HPC_QWEN_BASE_URL (e.g. http://100.125.96.35:18020/v1)}"
+    : "${HPC_QWEN_API_KEY:?set HPC_QWEN_API_KEY}"
+    export OPENCODE_CONFIG="$HERE/opencode.json"
+    # Hermetic: ignore any user-level ~/.config/opencode (agents/permissions) wherever this runs.
+    export XDG_CONFIG_HOME="$(mktemp -d)"
+    # Permissions are explicit per mode so nothing ever "asks" in a non-interactive run.
+    export OPENCODE_PERMISSION="{\"*\":\"deny\",\"read\":\"allow\",\"glob\":\"allow\",\"grep\":\"allow\",\"list\":\"allow\",\"edit\":\"allow\",\"todowrite\":\"allow\",\"todoread\":\"allow\",\"task\":\"deny\",\"webfetch\":\"deny\",\"websearch\":\"deny\",\"bash\":$OC_BASH}"
+    export OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_AUTO_SHARE=0
+    opencode run --model "${SYNC_MODEL:-hpc-qwen/flash-next}" --format default "$PROMPT" < /dev/null
+    ;;
+esac

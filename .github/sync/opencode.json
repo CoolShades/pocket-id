@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "hpc-qwen/flash-next",
+  "provider": {
+    "hpc-qwen": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen Flash-Next on coolshades-hpc (vLLM)",
+      "options": {
+        "baseURL": "{env:HPC_QWEN_BASE_URL}",
+        "apiKey": "{env:HPC_QWEN_API_KEY}"
+      },
+      "models": {
+        "flash-next": {
+          "name": "Qwen3.8 Flash-Next W4A16 Merlin (hpc)",
+          "limit": { "context": 262144, "output": 16384 },
+          "tool_call": true
+        }
+      }
+    }
+  },
+  "share": "disabled",
+  "autoupdate": false
+}

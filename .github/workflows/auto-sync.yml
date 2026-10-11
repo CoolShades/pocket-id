@@ -3,15 +3,21 @@ name: Auto-sync with upstream releases
 # Daily: if upstream has published a new release that the feature branch does
 # not contain yet, sync main to the release tag, REBASE the feature commits
 # onto it, resolve conflicts automatically (union merge driver for append-only
-# hotspots, Claude Code for the rest), run the verification gate (go build +
-# unit tests, frontend build + svelte-check) and force-push the feature branch.
-# Only when that fails is a human asked, via a single issue per release.
+# hotspots, then OpenCode driving Qwen Flash-Next on coolshades-hpc for the
+# rest), run the verification gate (go build + unit tests, frontend build +
+# svelte-check, both Dockerfiles) and force-push the feature branch. Only when
+# that fails is a human asked, via a single issue per release.
 #
-# Secrets:
-#   SYNC_PAT                 PAT with contents+workflows write (push main/feature)
-#   CLAUDE_CODE_OAUTH_TOKEN  from `claude setup-token` (or ANTHROPIC_API_KEY).
-#                            Without one, union-only resolution is attempted and
-#                            remaining conflicts go to a human.
+# Two jobs: `check` is a cheap no-op most days; `sync` joins the tailnet as an
+# ephemeral node (tailscale/github-action, tag:ci) so it can reach the model on
+# hpc, then leaves. The ACL only lets tag:ci reach hpc:18020.
+#
+# Secrets / variables:
+#   SYNC_PAT              PAT with contents+workflows write (push main/feature)
+#   TS_OAUTH_CLIENT_ID    Tailscale OAuth client (scope auth_keys write, tag:ci)
+#   TS_OAUTH_SECRET
+#   HPC_QWEN_API_KEY      vLLM API key on hpc                 (secret)
+#   HPC_QWEN_BASE_URL     e.g. http://100.125.96.35:18020/v1  (variable)
 # Scripts live in .github/sync/ and can be run locally the same way.
 
 on:
@@ -38,8 +44,48 @@ env:
   GH_REPO: ${{ github.repository }}
 
 jobs:
-  sync:
+  check:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      synced: ${{ steps.check.outputs.synced }}
+    steps:
+      - name: Find latest upstream release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq .tag_name)
+          [ -n "$TAG" ] || { echo "::error::Could not determine the latest upstream release."; exit 1; }
+          echo "Latest upstream release: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the release is already synced
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=${{ steps.release.outputs.tag }}
+          # compare BASE...HEAD: "behind"/"identical" = HEAD (the release) is already an ancestor of BASE (the feature branch)
+          STATUS=$(gh api "repos/${{ env.GH_REPO }}/compare/${{ env.TARGET_BRANCH }}...${UPSTREAM_REPO%%/*}:${TAG}" --jq .status)
+          # "behind" or "identical" = the release commit is already an ancestor of the feature branch
+          if [ "$STATUS" = "behind" ] || [ "$STATUS" = "identical" ]; then
+            echo "Release ${TAG} is already contained in ${{ env.TARGET_BRANCH }} — nothing to do."
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release ${TAG} is not yet in ${{ env.TARGET_BRANCH }} (compare status: ${STATUS}) — syncing."
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sync:
+    needs: check
+    if: needs.check.outputs.synced == 'false'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+      SYNC_AGENT: opencode
+      HPC_QWEN_BASE_URL: ${{ vars.HPC_QWEN_BASE_URL }}
+      HPC_QWEN_API_KEY: ${{ secrets.HPC_QWEN_API_KEY }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v5
@@ -52,58 +98,45 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Find latest upstream release
-        id: release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Join the tailnet (ephemeral node, tag:ci)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: 100.125.96.35
+
+      - name: Check the model on hpc is reachable
         run: |
-          TAG=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq .tag_name)
-          [ -n "$TAG" ] || { echo "::error::Could not determine the latest upstream release."; exit 1; }
-          echo "Latest upstream release: $TAG"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          curl -sS -m 20 -H "Authorization: Bearer ${HPC_QWEN_API_KEY}" "${HPC_QWEN_BASE_URL}/models" \
+            | jq -r '.data[].id' | sed 's/^/model: /'
 
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream main --tags
 
-      - name: Check whether the release is already synced
-        id: check
-        run: |
-          TAG=${{ steps.release.outputs.tag }}
-          if git merge-base --is-ancestor "${TAG}^{commit}" "origin/${{ env.TARGET_BRANCH }}"; then
-            echo "Release ${TAG} is already contained in ${{ env.TARGET_BRANCH }} — nothing to do."
-            echo "synced=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Release ${TAG} is not yet in ${{ env.TARGET_BRANCH }} — syncing."
-            echo "synced=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ---- toolchain (only when there is something to sync) -------------------
+      # ---- toolchain -----------------------------------------------------------
       - name: Setup Go
-        if: steps.check.outputs.synced == 'false'
         uses: actions/setup-go@v6
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
       - name: Setup pnpm
-        if: steps.check.outputs.synced == 'false'
         uses: pnpm/action-setup@v4
       - name: Setup Node.js
-        if: steps.check.outputs.synced == 'false'
         uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
           cache: pnpm
-      - name: Install Claude Code
-        if: steps.check.outputs.synced == 'false'
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install OpenCode
+        run: |
+          npm install -g opencode-ai@1.19.0
+          opencode --version
 
       # ---- sync ---------------------------------------------------------------
       - name: Sync origin/main to the release tag
-        if: steps.check.outputs.synced == 'false'
         run: |
-          TAG=${{ steps.release.outputs.tag }}
           git checkout main
           if git merge-base --is-ancestor main "${TAG}^{commit}"; then
             git merge --ff-only "${TAG}^{commit}"
@@ -118,17 +151,14 @@ jobs:
 
       - name: Rebase ${{ env.TARGET_BRANCH }} onto main
         id: rebase
-        if: steps.check.outputs.synced == 'false'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           SYNC_CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
         run: |
           set -o pipefail
           # Run the scripts from outside the tree: the checkout switches branches underneath them.
-          cp -r .github/sync "${{ runner.temp }}/sync"
+          rm -rf "${{ runner.temp }}/sync" && cp -r .github/sync "${{ runner.temp }}/sync"
           git branch -f ${{ env.TARGET_BRANCH }} origin/${{ env.TARGET_BRANCH }}
-          if "${{ runner.temp }}/sync/rebase.sh" "${{ steps.release.outputs.tag }}" main "${{ env.TARGET_BRANCH }}" 2>&1 | tee "${{ runner.temp }}/rebase.log"; then
+          if "${{ runner.temp }}/sync/rebase.sh" "$TAG" main "${{ env.TARGET_BRANCH }}" 2>&1 | tee "${{ runner.temp }}/rebase.log"; then
             echo "status=rebased" >> "$GITHUB_OUTPUT"
           else
             echo "status=conflict" >> "$GITHUB_OUTPUT"
@@ -137,19 +167,15 @@ jobs:
       - name: Verify
         id: verify
         if: steps.rebase.outputs.status == 'rebased'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           set -o pipefail
-          TAG=${{ steps.release.outputs.tag }}
           LOG="${{ runner.temp }}/verify.log"
           SYNC="${{ runner.temp }}/sync"
           if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          echo "verify failed — asking Claude Code to fix it"
-          if "$SYNC/claude-assist.sh" verify "$TAG" "$LOG"; then
+          echo "verify failed — asking the agent to fix it"
+          if "$SYNC/ai-assist.sh" verify "$TAG" "$LOG"; then
             git add -A
             git commit --amend --no-edit
             if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
@@ -162,15 +188,14 @@ jobs:
         if: steps.verify.outputs.status == 'passed'
         run: |
           git push --force-with-lease origin ${{ env.TARGET_BRANCH }}
-          echo "Pushed ${{ env.TARGET_BRANCH }} rebased onto ${{ steps.release.outputs.tag }}."
+          echo "Pushed ${{ env.TARGET_BRANCH }} rebased onto ${TAG}."
 
       # ---- a human is needed ---------------------------------------------------
       - name: Ask for help
-        if: steps.check.outputs.synced == 'false' && steps.verify.outputs.status != 'passed'
+        if: always() && steps.verify.outputs.status != 'passed'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG=${{ steps.release.outputs.tag }}
           TARGET=${{ env.TARGET_BRANCH }}
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           BODY="${{ runner.temp }}/issue.md"
@@ -182,18 +207,15 @@ jobs:
               echo; echo "Conflicting files:"; echo '```'
               cat "${{ runner.temp }}/conflicts.txt" 2>/dev/null || echo "(see run log)"
               echo '```'
-              if [ -z "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-                echo; echo "> No \`CLAUDE_CODE_OAUTH_TOKEN\` / \`ANTHROPIC_API_KEY\` secret is set, so only the union merge driver was tried. Add one (\`claude setup-token\`, then \`gh secret set CLAUDE_CODE_OAUTH_TOKEN\`) and re-run the workflow to let it resolve conflicts itself."
-              fi
               echo; echo "### Resolve locally"; echo '```bash'
               echo "git fetch origin && git checkout ${TARGET} && git reset --hard origin/${TARGET}"
-              echo ".github/sync/rebase.sh ${TAG} origin/main ${TARGET}   # uses your local claude if needed"
+              echo ".github/sync/rebase.sh ${TAG} origin/main ${TARGET}   # needs opencode + HPC_QWEN_* in the env, or SYNC_AGENT=claude"
               echo "# or: git rebase origin/main, resolve, git rebase --continue"
               echo ".github/sync/verify.sh"
               echo "git push --force-with-lease origin ${TARGET}"
               echo '```'
             } > "$BODY"
-          else
+          elif [ "${{ steps.rebase.outputs.status }}" = "rebased" ]; then
             ATTEMPT="sync-attempt/${TAG}"
             git push --force origin "HEAD:refs/heads/${ATTEMPT}"
             TITLE="auto-sync: ${TAG} needs a hand (verification failed)"
@@ -210,6 +232,9 @@ jobs:
               echo "git push --force origin HEAD:${TARGET}"
               echo '```'
             } > "$BODY"
+          else
+            TITLE="auto-sync: ${TAG} needs a hand (job failed before the rebase)"
+            echo "The sync job for **${TAG}** failed before reaching the rebase step — see the [run](${RUN_URL})." > "$BODY"
           fi
 
           gh label create sync-conflict --color EA8A00 \

@@ -46,7 +46,7 @@ while in_progress; do
   if ((${#conflicted[@]})); then
     echo "rebase: conflicts applying '$(git log -1 --format=%s REBASE_HEAD)':"
     printf '  %s\n' "${conflicted[@]}"
-    "$HERE/claude-assist.sh" conflicts "$TAG" "${conflicted[@]}" || fail "could not resolve conflicts automatically"
+    "$HERE/ai-assist.sh" conflicts "$TAG" "${conflicted[@]}" || fail "could not resolve conflicts automatically"
     if git grep -lE '^(<<<<<<<|>>>>>>>) ' -- "${conflicted[@]}"; then
       fail "conflict markers left behind"
     fi
