@@ -16,6 +16,15 @@ MODE=${1:?mode}; TAG=${2:?tag}; shift 2
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 AGENT=${SYNC_AGENT:-opencode}
+# Forensics: with SYNC_LOG_DIR set, the transcript goes to agent-<tag>.log and
+# OpenCode's own session store (every tool call and edit) to opencode-data/.
+LOGDIR=${SYNC_LOG_DIR:-}
+TRANSCRIPT=/dev/null
+if [ -n "$LOGDIR" ]; then
+  mkdir -p "$LOGDIR"
+  TRANSCRIPT="$LOGDIR/agent-${SYNC_LOG_TAG:-$MODE}.log"
+  export XDG_DATA_HOME="$LOGDIR/opencode-data"
+fi
 case "$AGENT" in
   opencode) command -v opencode >/dev/null || { echo "ai-assist: opencode CLI not installed" >&2; exit 3; } ;;
   claude)   command -v claude   >/dev/null || { echo "ai-assist: claude CLI not installed" >&2; exit 3; } ;;
@@ -77,6 +86,7 @@ Re-run the failing check yourself to confirm (e.g. 'go -C backend build ./...', 
 esac
 
 echo "ai-assist: agent=$AGENT mode=$MODE tag=$TAG"
+{ echo "=== $(date -u +%FT%TZ) agent=$AGENT mode=$MODE tag=$TAG"; echo "--- prompt"; echo "$PROMPT"; echo "--- transcript"; } > "$TRANSCRIPT"
 case "$AGENT" in
   claude)
     claude -p "$PROMPT" \
@@ -85,7 +95,7 @@ case "$AGENT" in
       --strict-mcp-config \
       --no-session-persistence \
       --max-budget-usd "${CLAUDE_ASSIST_BUDGET_USD:-10}" \
-      --output-format text < /dev/null
+      --output-format text < /dev/null 2>&1 | tee -a "$TRANSCRIPT"
     ;;
   opencode)
     : "${HPC_QWEN_BASE_URL:?set HPC_QWEN_BASE_URL (e.g. http://100.125.96.35:18020/v1)}"
@@ -96,6 +106,6 @@ case "$AGENT" in
     # Permissions are explicit per mode so nothing ever "asks" in a non-interactive run.
     export OPENCODE_PERMISSION="{\"*\":\"deny\",\"read\":\"allow\",\"glob\":\"allow\",\"grep\":\"allow\",\"list\":\"allow\",\"edit\":\"allow\",\"todowrite\":\"allow\",\"todoread\":\"allow\",\"task\":\"deny\",\"webfetch\":\"deny\",\"websearch\":\"deny\",\"bash\":$OC_BASH}"
     export OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_AUTO_SHARE=0
-    opencode run --model "${SYNC_MODEL:-hpc-qwen/flash-next}" --format default "$PROMPT" < /dev/null
+    opencode run --model "${SYNC_MODEL:-hpc-qwen/flash-next}" --format default "$PROMPT" < /dev/null 2>&1 | tee -a "$TRANSCRIPT"
     ;;
 esac

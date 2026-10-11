@@ -14,6 +14,13 @@ TAG=${1:?tag}; ONTO=${2:?onto}; FEATURE=${3:?feature}
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 export GIT_EDITOR=true
+# Forensics: with SYNC_LOG_DIR set, every agent round leaves
+#   conflict-N-before.diff   the tree as the agent saw it (markers included)
+#   conflict-N-after.diff    what the agent changed, before it was staged
+#   agent-conflict-N.log     the agent's transcript (via ai-assist.sh)
+LOGDIR=${SYNC_LOG_DIR:-}; [ -z "$LOGDIR" ] || mkdir -p "$LOGDIR"
+snapshot() { [ -z "$LOGDIR" ] || git diff > "$LOGDIR/$1.diff" 2>/dev/null || true; }
+round=0
 
 ATTR="$(git rev-parse --git-path info)/attributes"
 mkdir -p "$(dirname "$ATTR")"
@@ -46,7 +53,11 @@ while in_progress; do
   if ((${#conflicted[@]})); then
     echo "rebase: conflicts applying '$(git log -1 --format=%s REBASE_HEAD)':"
     printf '  %s\n' "${conflicted[@]}"
-    "$HERE/ai-assist.sh" conflicts "$TAG" "${conflicted[@]}" || fail "could not resolve conflicts automatically"
+    round=$((round + 1))
+    snapshot "conflict-$round-before"
+    SYNC_LOG_TAG="conflict-$round" "$HERE/ai-assist.sh" conflicts "$TAG" "${conflicted[@]}" \
+      || { snapshot "conflict-$round-after"; fail "could not resolve conflicts automatically"; }
+    snapshot "conflict-$round-after"
     if git grep -lE '^(<<<<<<<|>>>>>>>) ' -- "${conflicted[@]}"; then
       fail "conflict markers left behind"
     fi

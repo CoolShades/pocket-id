@@ -19,6 +19,10 @@ name: Auto-sync with upstream releases
 #   HPC_QWEN_API_KEY      vLLM API key on hpc                 (secret)
 #   HPC_QWEN_BASE_URL     e.g. http://100.125.96.35:18020/v1  (variable)
 # Scripts live in .github/sync/ and can be run locally the same way.
+#
+# Every sync attempt leaves a record: an artifact (conflict hunks before/after
+# each agent round, agent transcripts + OpenCode session store, verify logs),
+# the job summary, and a comment on the permanent "auto-sync log" issue.
 
 on:
   schedule:
@@ -93,10 +97,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SYNC_PAT }}
 
-      - name: Configure git identity
+      - name: Configure git identity and log dir
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          mkdir -p "$RUNNER_TEMP/sync-logs"
+          echo "SYNC_LOG_DIR=$RUNNER_TEMP/sync-logs" >> "$GITHUB_ENV"
 
       - name: Join the tailnet (ephemeral node, tag:ci)
         uses: tailscale/github-action@v4
@@ -155,13 +161,15 @@ jobs:
       - name: Rebase ${{ env.TARGET_BRANCH }} onto main
         id: rebase
         env:
-          SYNC_CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
+          SYNC_CONFLICTS_FILE: ${{ runner.temp }}/sync-logs/conflicts.txt
         run: |
           set -o pipefail
+          mkdir -p "$SYNC_LOG_DIR"
+          echo "old-tip $(git rev-parse origin/${{ env.TARGET_BRANCH }})" > "$SYNC_LOG_DIR/refs.txt"
           # Run the scripts from outside the tree: the checkout switches branches underneath them.
           rm -rf "${{ runner.temp }}/sync" && cp -r .github/sync "${{ runner.temp }}/sync"
           git branch -f ${{ env.TARGET_BRANCH }} origin/${{ env.TARGET_BRANCH }}
-          if "${{ runner.temp }}/sync/rebase.sh" "$TAG" main "${{ env.TARGET_BRANCH }}" 2>&1 | tee "${{ runner.temp }}/rebase.log"; then
+          if "${{ runner.temp }}/sync/rebase.sh" "$TAG" main "${{ env.TARGET_BRANCH }}" 2>&1 | tee "$SYNC_LOG_DIR/rebase.log"; then
             echo "status=rebased" >> "$GITHUB_OUTPUT"
           else
             echo "status=conflict" >> "$GITHUB_OUTPUT"
@@ -172,16 +180,17 @@ jobs:
         if: steps.rebase.outputs.status == 'rebased'
         run: |
           set -o pipefail
-          LOG="${{ runner.temp }}/verify.log"
+          LOG="$SYNC_LOG_DIR/verify-1.log"
           SYNC="${{ runner.temp }}/sync"
           if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
             echo "status=passed" >> "$GITHUB_OUTPUT"; exit 0
           fi
           echo "verify failed — asking the agent to fix it"
           if "$SYNC/ai-assist.sh" verify "$TAG" "$LOG"; then
+            git diff > "$SYNC_LOG_DIR/verify-fix.diff" || true
             git add -A
             git commit --amend --no-edit
-            if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
+            if "$SYNC/verify.sh" 2>&1 | tee "$SYNC_LOG_DIR/verify-2.log"; then
               echo "status=passed" >> "$GITHUB_OUTPUT"; exit 0
             fi
           fi
@@ -191,7 +200,72 @@ jobs:
         if: steps.verify.outputs.status == 'passed'
         run: |
           git push --force-with-lease origin ${{ env.TARGET_BRANCH }}
+          echo "new-tip $(git rev-parse HEAD)" >> "$SYNC_LOG_DIR/refs.txt"
           echo "Pushed ${{ env.TARGET_BRANCH }} rebased onto ${TAG}."
+
+      # ---- record what happened, pass or fail --------------------------------
+      - name: Upload sync logs
+        id: artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auto-sync-${{ needs.check.outputs.tag }}-run${{ github.run_number }}
+          path: ${{ runner.temp }}/sync-logs
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Record in the auto-sync log
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBASE: ${{ steps.rebase.outputs.status }}
+          VERIFY: ${{ steps.verify.outputs.status }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          L="$SYNC_LOG_DIR"
+          case "${REBASE:-none}/${VERIFY:-none}" in
+            rebased/passed) RESULT="✅ synced and pushed" ;;
+            rebased/failed) RESULT="❌ rebased, verification failed" ;;
+            conflict/*)     RESULT="❌ unresolved conflict" ;;
+            *)              RESULT="❌ failed before the rebase" ;;
+          esac
+          ROUNDS=$(ls "$L"/conflict-*-before.diff 2>/dev/null | wc -l | tr -d ' ')
+          {
+            echo "### ${{ env.TARGET_BRANCH }} → ${TAG}: ${RESULT}"
+            echo
+            echo "- run: ${RUN_URL}"
+            echo "- logs: ${ARTIFACT_URL:-no artifact} (90 days)"
+            echo "- agent: ${SYNC_AGENT} / ${SYNC_MODEL:-hpc-qwen/flash-next}"
+            echo "- refs: $(tr '\n' ' ' < "$L/refs.txt" 2>/dev/null)"
+            echo "- conflict rounds handed to the agent: ${ROUNDS}"
+            for b in "$L"/conflict-*-before.diff; do
+              [ -e "$b" ] || continue
+              n=$(basename "$b" -before.diff)
+              echo "  - ${n}: files with markers → $(grep -E '^diff --cc|^diff --git' "$b" | awk '{print $NF}' | sed 's#^b/##' | tr '\n' ' ')"
+              a="$L/${n}-after.diff"
+              [ -e "$a" ] && echo "    agent touched → $(grep -E '^diff --cc|^diff --git' "$a" | awk '{print $NF}' | sed 's#^b/##' | tr '\n' ' ')"
+            done
+            if [ -e "$L/verify-1.log" ]; then
+              echo "- gate, first pass: $(grep -E '^verify: ' "$L/verify-1.log" | tail -1)"
+              grep -E '::error::verify:' "$L/verify-1.log" | sed 's/::error::/  - /' | head -5
+            fi
+            [ -e "$L/verify-fix.diff" ] && echo "- agent fix pass touched → $(grep -E '^diff --git' "$L/verify-fix.diff" | awk '{print $NF}' | sed 's#^b/##' | tr '\n' ' ')"
+            [ -e "$L/verify-2.log" ] && echo "- gate, second pass: $(grep -E '^verify: ' "$L/verify-2.log" | tail -1)"
+          } > "$L/summary.md"
+          cat "$L/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+          # One permanent issue carries a comment per attempt, so the history
+          # outlives the 90-day artifact/log retention.
+          gh label create sync-log --color 0E8A16 --description "Permanent auto-sync history" 2>/dev/null || true
+          LOGISSUE=$(gh issue list --label sync-log --state open --json number --jq '.[0].number // empty')
+          if [ -z "$LOGISSUE" ]; then
+            LOGISSUE=$(gh issue create --title "auto-sync log" --label sync-log \
+              --body "One comment per upstream-release sync attempt (pass or fail), with links to the run and its forensic artifact. Keep open." \
+              | grep -oE '[0-9]+$')
+            gh issue pin "$LOGISSUE" 2>/dev/null || true
+          fi
+          gh issue comment "$LOGISSUE" -F "$L/summary.md"
 
       # ---- a human is needed ---------------------------------------------------
       - name: Ask for help
@@ -206,9 +280,9 @@ jobs:
           if [ "${{ steps.rebase.outputs.status }}" = "conflict" ]; then
             TITLE="auto-sync: ${TAG} needs a hand (merge conflict)"
             {
-              echo "Rebasing **${TARGET}** onto **upstream release ${TAG}** stopped on conflicts the job could not resolve ([run](${RUN_URL}))."
+              echo "Rebasing **${TARGET}** onto **upstream release ${TAG}** stopped on conflicts the job could not resolve ([run](${RUN_URL}), [logs](${{ steps.artifact.outputs.artifact-url }}))."
               echo; echo "Conflicting files:"; echo '```'
-              cat "${{ runner.temp }}/conflicts.txt" 2>/dev/null || echo "(see run log)"
+              cat "$SYNC_LOG_DIR/conflicts.txt" 2>/dev/null || echo "(see run log)"
               echo '```'
               echo; echo "### Resolve locally"; echo '```bash'
               echo "git fetch origin && git checkout ${TARGET} && git reset --hard origin/${TARGET}"
@@ -223,10 +297,10 @@ jobs:
             git push --force origin "HEAD:refs/heads/${ATTEMPT}"
             TITLE="auto-sync: ${TAG} needs a hand (verification failed)"
             {
-              echo "**${TARGET}** was rebased onto **upstream release ${TAG}** but the verification gate failed, so nothing was pushed to ${TARGET} ([run](${RUN_URL}))."
+              echo "**${TARGET}** was rebased onto **upstream release ${TAG}** but the verification gate failed, so nothing was pushed to ${TARGET} ([run](${RUN_URL}), [logs](${{ steps.artifact.outputs.artifact-url }}))."
               echo "The rebased state is on branch \`${ATTEMPT}\`."
               echo; echo "<details><summary>verify.sh output (tail)</summary>"; echo; echo '```'
-              tail -n 120 "${{ runner.temp }}/verify.log"
+              tail -n 120 "$(ls -t "$SYNC_LOG_DIR"/verify-*.log | head -1)"
               echo '```'; echo "</details>"
               echo; echo "### Fix locally"; echo '```bash'
               echo "git fetch origin && git checkout ${ATTEMPT}"
