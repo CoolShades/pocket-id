@@ -108,7 +108,10 @@ jobs:
 
       - name: Check the model on hpc is reachable
         run: |
-          curl -sS -m 20 -H "Authorization: Bearer ${HPC_QWEN_API_KEY}" "${HPC_QWEN_BASE_URL}/models" \
+          set -o pipefail
+          : "${HPC_QWEN_BASE_URL:?repo variable HPC_QWEN_BASE_URL is not set}"
+          : "${HPC_QWEN_API_KEY:?repo secret HPC_QWEN_API_KEY is not set}"
+          curl -fsS -m 20 -H "Authorization: Bearer ${HPC_QWEN_API_KEY}" "${HPC_QWEN_BASE_URL}/models" \
             | jq -r '.data[].id' | sed 's/^/model: /'
 
       - name: Fetch upstream
