@@ -1,10 +1,18 @@
 name: Auto-sync with upstream releases
 
-# Checks daily whether the upstream repo has published a new release.
-# Between releases every run is a cheap no-op; when a new release tag
-# appears, main is synced to that tag and then merged into the feature
-# branch. Commits that land on upstream main between releases are
-# deliberately ignored until they ship in a release.
+# Daily: if upstream has published a new release that the feature branch does
+# not contain yet, sync main to the release tag, REBASE the feature commits
+# onto it, resolve conflicts automatically (union merge driver for append-only
+# hotspots, Claude Code for the rest), run the verification gate (go build +
+# unit tests, frontend build + svelte-check) and force-push the feature branch.
+# Only when that fails is a human asked, via a single issue per release.
+#
+# Secrets:
+#   SYNC_PAT                 PAT with contents+workflows write (push main/feature)
+#   CLAUDE_CODE_OAUTH_TOKEN  from `claude setup-token` (or ANTHROPIC_API_KEY).
+#                            Without one, union-only resolution is attempted and
+#                            remaining conflicts go to a human.
+# Scripts live in .github/sync/ and can be run locally the same way.
 
 on:
   schedule:
@@ -12,18 +20,22 @@ on:
   workflow_dispatch:
     inputs:
       target_branch:
-        description: "Feature branch to merge main into"
+        description: "Feature branch to rebase onto the latest release"
         required: false
         default: "feat/dynamic-background"
 
 permissions:
   contents: write
-  pull-requests: write
-  issues: write   # required so `gh label create` can create the sync-conflict label
+  issues: write
+
+concurrency:
+  group: auto-sync
+  cancel-in-progress: false
 
 env:
   UPSTREAM_REPO: pocket-id/pocket-id
   TARGET_BRANCH: ${{ github.event.inputs.target_branch || 'feat/dynamic-background' }}
+  GH_REPO: ${{ github.repository }}
 
 jobs:
   sync:
@@ -33,9 +45,6 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          # PAT with `workflows: write` — required because upstream periodically
-          # edits files under .github/workflows/, and the default GITHUB_TOKEN
-          # is not allowed to push such changes.
           token: ${{ secrets.SYNC_PAT }}
 
       - name: Configure git identity
@@ -48,17 +57,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # `releases/latest` excludes drafts and prereleases, so this only
-          # moves when a proper release is published.
           TAG=$(gh api "repos/${{ env.UPSTREAM_REPO }}/releases/latest" --jq .tag_name)
-          if [ -z "$TAG" ]; then
-            echo "::error::Could not determine the latest upstream release."
-            exit 1
-          fi
+          [ -n "$TAG" ] || { echo "::error::Could not determine the latest upstream release."; exit 1; }
           echo "Latest upstream release: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Add upstream remote and fetch
+      - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream main --tags
@@ -67,8 +71,7 @@ jobs:
         id: check
         run: |
           TAG=${{ steps.release.outputs.tag }}
-          TAG_COMMIT=$(git rev-parse "${TAG}^{commit}")
-          if git merge-base --is-ancestor "$TAG_COMMIT" "origin/${{ env.TARGET_BRANCH }}"; then
+          if git merge-base --is-ancestor "${TAG}^{commit}" "origin/${{ env.TARGET_BRANCH }}"; then
             echo "Release ${TAG} is already contained in ${{ env.TARGET_BRANCH }} — nothing to do."
             echo "synced=true" >> "$GITHUB_OUTPUT"
           else
@@ -76,17 +79,36 @@ jobs:
             echo "synced=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # ---- toolchain (only when there is something to sync) -------------------
+      - name: Setup Go
+        if: steps.check.outputs.synced == 'false'
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Setup pnpm
+        if: steps.check.outputs.synced == 'false'
+        uses: pnpm/action-setup@v4
+      - name: Setup Node.js
+        if: steps.check.outputs.synced == 'false'
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install Claude Code
+        if: steps.check.outputs.synced == 'false'
+        run: npm install -g @anthropic-ai/claude-code
+
+      # ---- sync ---------------------------------------------------------------
       - name: Sync origin/main to the release tag
         if: steps.check.outputs.synced == 'false'
         run: |
           TAG=${{ steps.release.outputs.tag }}
           git checkout main
           if git merge-base --is-ancestor main "${TAG}^{commit}"; then
-            # Fast-forward is possible — main is strictly behind the release
             git merge --ff-only "${TAG}^{commit}"
           else
-            # main has diverged (expected: this workflow file lives here).
-            # Perform a real merge so both histories are preserved.
+            # main carries the fork's workflow + sync scripts, so a real merge.
             git merge --no-edit "$TAG" || {
               echo "::error::Conflict merging release ${TAG} into origin/main. Resolve manually."
               exit 1
@@ -94,89 +116,115 @@ jobs:
           fi
           git push origin main
 
-      - name: Attempt merge of main into ${{ env.TARGET_BRANCH }}
-        id: merge
+      - name: Rebase ${{ env.TARGET_BRANCH }} onto main
+        id: rebase
         if: steps.check.outputs.synced == 'false'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SYNC_CONFLICTS_FILE: ${{ runner.temp }}/conflicts.txt
         run: |
-          git checkout ${{ env.TARGET_BRANCH }}
-          git pull --ff-only origin ${{ env.TARGET_BRANCH }} || true
-          if git merge --no-edit main; then
-            echo "status=clean" >> "$GITHUB_OUTPUT"
+          set -o pipefail
+          # Run the scripts from outside the tree: the checkout switches branches underneath them.
+          cp -r .github/sync "${{ runner.temp }}/sync"
+          git branch -f ${{ env.TARGET_BRANCH }} origin/${{ env.TARGET_BRANCH }}
+          if "${{ runner.temp }}/sync/rebase.sh" "${{ steps.release.outputs.tag }}" main "${{ env.TARGET_BRANCH }}" 2>&1 | tee "${{ runner.temp }}/rebase.log"; then
+            echo "status=rebased" >> "$GITHUB_OUTPUT"
           else
             echo "status=conflict" >> "$GITHUB_OUTPUT"
-            git merge --abort
           fi
 
-      - name: Push merged target branch
-        if: steps.merge.outputs.status == 'clean'
+      - name: Verify
+        id: verify
+        if: steps.rebase.outputs.status == 'rebased'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          if git diff --quiet origin/${{ env.TARGET_BRANCH }} HEAD; then
-            echo "No new commits to push — already up to date."
-            exit 0
+          set -o pipefail
+          TAG=${{ steps.release.outputs.tag }}
+          LOG="${{ runner.temp }}/verify.log"
+          SYNC="${{ runner.temp }}/sync"
+          if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
+            echo "status=passed" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          git push origin ${{ env.TARGET_BRANCH }}
+          echo "verify failed — asking Claude Code to fix it"
+          if "$SYNC/claude-assist.sh" verify "$TAG" "$LOG"; then
+            git add -A
+            git commit --amend --no-edit
+            if "$SYNC/verify.sh" 2>&1 | tee "$LOG"; then
+              echo "status=passed" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          echo "status=failed" >> "$GITHUB_OUTPUT"
 
-      - name: Open sync-conflict PR
-        if: steps.merge.outputs.status == 'conflict'
+      - name: Push rebased ${{ env.TARGET_BRANCH }}
+        if: steps.verify.outputs.status == 'passed'
+        run: |
+          git push --force-with-lease origin ${{ env.TARGET_BRANCH }}
+          echo "Pushed ${{ env.TARGET_BRANCH }} rebased onto ${{ steps.release.outputs.tag }}."
+
+      # ---- a human is needed ---------------------------------------------------
+      - name: Ask for help
+        if: steps.check.outputs.synced == 'false' && steps.verify.outputs.status != 'passed'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Without this, gh defaults to the upstream parent for `pr create` / `pr list` /
-          # `label create` on fork checkouts, which is wrong — we want the fork.
-          GH_REPO: ${{ github.repository }}
         run: |
           TAG=${{ steps.release.outputs.tag }}
+          TARGET=${{ env.TARGET_BRANCH }}
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          BODY="${{ runner.temp }}/issue.md"
 
-          # If a previous sync-conflict PR is still open, do not open another
-          # one — resolve and merge it first, then the next run picks up
-          # whatever is still outstanding.
-          EXISTING=$(gh pr list \
-            --base ${{ env.TARGET_BRANCH }} \
-            --state open \
-            --json number,headRefName \
-            --jq '[.[] | select(.headRefName | startswith("sync-conflict/"))] | .[0].number // empty')
-          if [ -n "$EXISTING" ]; then
-            echo "::error::Sync conflict from main into ${{ env.TARGET_BRANCH }}, and PR #${EXISTING} is still open. Resolve and merge it first — no new PR was opened."
-            exit 1
+          if [ "${{ steps.rebase.outputs.status }}" = "conflict" ]; then
+            TITLE="auto-sync: ${TAG} needs a hand (merge conflict)"
+            {
+              echo "Rebasing **${TARGET}** onto **upstream release ${TAG}** stopped on conflicts the job could not resolve ([run](${RUN_URL}))."
+              echo; echo "Conflicting files:"; echo '```'
+              cat "${{ runner.temp }}/conflicts.txt" 2>/dev/null || echo "(see run log)"
+              echo '```'
+              if [ -z "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+                echo; echo "> No \`CLAUDE_CODE_OAUTH_TOKEN\` / \`ANTHROPIC_API_KEY\` secret is set, so only the union merge driver was tried. Add one (\`claude setup-token\`, then \`gh secret set CLAUDE_CODE_OAUTH_TOKEN\`) and re-run the workflow to let it resolve conflicts itself."
+              fi
+              echo; echo "### Resolve locally"; echo '```bash'
+              echo "git fetch origin && git checkout ${TARGET} && git reset --hard origin/${TARGET}"
+              echo ".github/sync/rebase.sh ${TAG} origin/main ${TARGET}   # uses your local claude if needed"
+              echo "# or: git rebase origin/main, resolve, git rebase --continue"
+              echo ".github/sync/verify.sh"
+              echo "git push --force-with-lease origin ${TARGET}"
+              echo '```'
+            } > "$BODY"
+          else
+            ATTEMPT="sync-attempt/${TAG}"
+            git push --force origin "HEAD:refs/heads/${ATTEMPT}"
+            TITLE="auto-sync: ${TAG} needs a hand (verification failed)"
+            {
+              echo "**${TARGET}** was rebased onto **upstream release ${TAG}** but the verification gate failed, so nothing was pushed to ${TARGET} ([run](${RUN_URL}))."
+              echo "The rebased state is on branch \`${ATTEMPT}\`."
+              echo; echo "<details><summary>verify.sh output (tail)</summary>"; echo; echo '```'
+              tail -n 120 "${{ runner.temp }}/verify.log"
+              echo '```'; echo "</details>"
+              echo; echo "### Fix locally"; echo '```bash'
+              echo "git fetch origin && git checkout ${ATTEMPT}"
+              echo "# fix, then:"
+              echo ".github/sync/verify.sh && git commit -a --amend --no-edit"
+              echo "git push --force origin HEAD:${TARGET}"
+              echo '```'
+            } > "$BODY"
           fi
 
-          BRANCH="sync-conflict/${TAG}"
-          git checkout -B "$BRANCH" ${{ env.TARGET_BRANCH }}
-          # Re-do the merge so the conflict markers land on the sync-conflict branch
-          git merge --no-edit main || true
-          git add -A
-          git commit -m "WIP: sync conflict merging release ${TAG} into ${{ env.TARGET_BRANCH }}
+          gh label create sync-conflict --color EA8A00 \
+            --description "Upstream release sync that needs a human" 2>/dev/null || true
 
-          This commit contains the merge conflict markers. Resolve them, then
-          merge this PR into ${{ env.TARGET_BRANCH }}."
-          git push -u origin "$BRANCH" --force
-
-          # Ensure the sync-conflict label exists (forks don't inherit upstream labels).
-          gh label create sync-conflict \
-            --color EA8A00 \
-            --description "Auto-opened PR carrying conflict markers from upstream release sync" \
-            2>/dev/null || true
-
-          gh pr create \
-            --base ${{ env.TARGET_BRANCH }} \
-            --head "$BRANCH" \
-            --title "auto-sync: resolve conflicts from release ${TAG} into ${{ env.TARGET_BRANCH }}" \
-            --body "Syncing **upstream release ${TAG}** into **${{ env.TARGET_BRANCH }}** hit a merge conflict.
-
-          ### Resolve locally
-
-          \`\`\`bash
-          git fetch origin
-          git checkout ${BRANCH}
-          # resolve conflict markers in the affected files
-          git add -A
-          git commit --amend --no-edit
-          git push --force-with-lease
-          \`\`\`
-
-          Then merge this PR." \
-            --label "sync-conflict"
-
-          # Even when the PR step succeeds, a conflict is a condition the user must act on.
-          # Fail the job so the Actions UI turns red and GitHub emails on failure.
-          echo "::error::Sync conflict merging release ${TAG} into ${{ env.TARGET_BRANCH }} — see PR for ${BRANCH}."
+          # One open issue per release; older ones are superseded.
+          EXISTING=$(gh issue list --label sync-conflict --state open --json number,title \
+            --jq ".[] | select(.title | contains(\"${TAG} \")) | .number" | head -1)
+          gh issue list --label sync-conflict --state open --json number,title \
+            --jq ".[] | select(.title | contains(\"${TAG} \") | not) | .number" \
+            | while read -r n; do gh issue close "$n" -c "Superseded by the sync of ${TAG}."; done
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" -F "$BODY"
+          else
+            gh issue create --title "$TITLE" --label sync-conflict -F "$BODY"
+          fi
+          echo "::error::${TITLE}"
           exit 1

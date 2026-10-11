@@ -1,0 +1,8 @@
+# Files where the fork only ever APPENDS lines to a struct/type/literal that
+# upstream also appends to. git reports that as a conflict; the code does not
+# care about the order, so these are merged with git's built-in "union" driver
+# (keep both sides). verify.sh catches anything the union gets wrong.
+backend/internal/appconfig/model.go
+backend/internal/dto/app_config_dto.go
+backend/internal/middleware/error_handler_test.go
+frontend/src/lib/types/application-configuration.type.ts
