@@ -9,9 +9,12 @@
 	import appConfigStore from '#lib/stores/application-configuration-store.ts';
 	import { cachedBackgroundImage } from '#lib/utils/cached-image-util.ts';
 	import { cn } from '#lib/utils/style.ts';
+	import { mode } from 'mode-watcher';
 	import { onMount, type Snippet } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { fade } from 'svelte/transition';
+	import DynamicBackground from './dynamic-background/dynamic-background.svelte';
+	import type { DynamicBackgroundConfig } from './dynamic-background/themes';
 	import * as Card from './ui/card';
 
 	let {
@@ -39,6 +42,48 @@
 	});
 
 	const isDesktop = new MediaQuery('(min-width: 1024px)');
+
+	let canUseDynamic = $state(false);
+	let dynamicFailed = $state(false);
+
+	// Fresh seed each mount so the pattern differs per visit.
+	const randomSeed = Math.floor(Math.random() * 4294967295) + 1;
+
+	onMount(() => {
+		const offscreenOk =
+			typeof HTMLCanvasElement !== 'undefined' &&
+			'transferControlToOffscreen' in HTMLCanvasElement.prototype;
+		const mql = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const update = () => {
+			canUseDynamic = offscreenOk && !mql.matches;
+		};
+		update();
+		mql.addEventListener('change', update);
+		return () => mql.removeEventListener('change', update);
+	});
+
+	let useDynamic = $derived(
+		$appConfigStore.dynamicBackgroundEnabled &&
+			!$appConfigStore.disableAnimations &&
+			canUseDynamic &&
+			!dynamicFailed
+	);
+
+	let dynamicConfig = $derived<DynamicBackgroundConfig>({
+		theme: $appConfigStore.dynamicBackgroundTheme,
+		seed: randomSeed,
+		density: $appConfigStore.dynamicBackgroundDensity,
+		flowSpeed: $appConfigStore.dynamicBackgroundFlowSpeed,
+		noiseScale: $appConfigStore.dynamicBackgroundNoiseScale,
+		turbulence: $appConfigStore.dynamicBackgroundTurbulence,
+		trailFade: $appConfigStore.dynamicBackgroundTrailFade,
+		particleSize: $appConfigStore.dynamicBackgroundParticleSize
+	});
+
+	// "Background visible" = dynamic is active OR the static background image exists.
+	// Drives the side-by-side desktop layout and the transparent-card mobile fallback.
+	let hasVisibleBackground = $derived(useDynamic || backgroundImageExists === true);
+
 	let alternativeSignInButton = $derived({
 		href:
 			page.url.pathname === '/login'
@@ -48,12 +93,12 @@
 	});
 </script>
 
-{#if backgroundImageExists === undefined}
+{#if !useDynamic && backgroundImageExists === undefined}
 	<div class="bg-background h-screen"></div>
 {:else if isDesktop.current}
 	<div
 		in:fade={{ duration: 150 }}
-		class="relative flex h-screen w-full items-center overflow-hidden text-center {backgroundImageExists
+		class="relative flex h-screen w-full items-center overflow-hidden text-center {hasVisibleBackground
 			? 'justify-start'
 			: 'justify-center'}"
 	>
@@ -79,7 +124,18 @@
 			</div>
 		</div>
 
-		{#if backgroundImageExists}
+		{#if useDynamic}
+			<div
+				class="absolute top-0 right-0 bottom-0 left-[650px] z-0 m-6 overflow-hidden rounded-[40px] 2xl:left-[800px]"
+			>
+				<DynamicBackground
+					config={dynamicConfig}
+					mode={mode.current ?? 'dark'}
+					class="h-full w-full"
+					onfallback={() => (dynamicFailed = true)}
+				/>
+			</div>
+		{:else if backgroundImageExists}
 			<!-- Background image -->
 			<div
 				class="absolute top-0 right-0 bottom-0 left-[650px] z-0 m-6 overflow-hidden rounded-[40px] 2xl:left-[800px]"
@@ -95,14 +151,24 @@
 		{/if}
 	</div>
 {:else}
+	{#if useDynamic}
+		<div class="fixed inset-0 -z-10">
+			<DynamicBackground
+				config={dynamicConfig}
+				mode={mode.current ?? 'dark'}
+				class="h-full w-full"
+				onfallback={() => (dynamicFailed = true)}
+			/>
+		</div>
+	{/if}
 	<div
 		class="flex min-h-dvh items-center justify-center bg-cover bg-center text-center"
-		style="background-image: url({cachedBackgroundImage.getUrl()});"
+		style={useDynamic ? '' : `background-image: url(${cachedBackgroundImage.getUrl()});`}
 	>
 		<Card.Root
 			class={{
 				'mx-3 w-full max-w-md': true,
-				'border-0 bg-transparent': !backgroundImageExists
+				'border-0 bg-transparent': !useDynamic && !backgroundImageExists
 			}}
 		>
 			<Card.CardContent

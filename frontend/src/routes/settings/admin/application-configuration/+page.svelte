@@ -15,6 +15,8 @@
 	import AppConfigPasskeysForm from './forms/app-config-passkeys-form.svelte';
 	import AppConfigSignupDefaultsForm from './forms/app-config-signup-defaults-form.svelte';
 	import UpdateApplicationImages from './update-application-images.svelte';
+	// Fork: kept last so upstream's alphabetical additions above don't collide with it.
+	import AppConfigDynamicBackgroundForm from './forms/app-config-dynamic-background-form.svelte';
 
 	let { data } = $props();
 	let appConfig = $state(data.appConfig);
@@ -118,6 +120,9 @@
 			<Tabs.Trigger value="oidc">
 				{m.oidc()}
 			</Tabs.Trigger>
+			<Tabs.Trigger value="dynamic-background">
+				{m.dynamic_background()}
+			</Tabs.Trigger>
 		</Tabs.List>
 	</div>
 
@@ -209,6 +214,18 @@
 			</Card.Header>
 			<Card.Content>
 				<AppConfigDynamicClientsForm {appConfig} callback={updateAppConfig} />
+			</Card.Content>
+		</Card.Root>
+	</Tabs.Content>
+
+	<Tabs.Content value="dynamic-background" id="application-configuration-dynamic-background">
+		<Card.Root>
+			<Card.Header>
+				<Card.Title>{m.dynamic_background()}</Card.Title>
+				<Card.Description>{m.dynamic_background_description()}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<AppConfigDynamicBackgroundForm {appConfig} callback={updateAppConfig} />
 			</Card.Content>
 		</Card.Root>
 	</Tabs.Content>
