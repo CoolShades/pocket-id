@@ -10,6 +10,7 @@ import (
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
+	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/middleware"
@@ -21,69 +22,42 @@ import (
 // @Summary OIDC controller
 // @Description Initializes all OIDC-related API endpoints for authentication and client management
 // @Tags OIDC
-func NewOidcController(group *gin.RouterGroup, authMiddleware *middleware.AuthMiddleware, fileSizeLimitMiddleware *middleware.FileSizeLimitMiddleware, oidcService *service.OidcService, appConfigService appconfig.AppConfigResolver) {
+func NewOidcController(r *authz.Router, fileSizeLimitMiddleware *middleware.FileSizeLimitMiddleware, oidcService *service.OidcService, appConfigService appconfig.AppConfigResolver) {
 	oc := &OidcController{
 		oidcService:      oidcService,
 		appConfigService: appConfigService,
 	}
 
-	group.GET("/oidc/clients", authMiddleware.Add(), httpserver.Handle(oc.listClientsHandler))
-	group.POST("/oidc/clients", authMiddleware.Add(), httpserver.Handle(oc.createClientHandler))
-	group.GET("/oidc/clients/:id", authMiddleware.Add(), httpserver.Handle(oc.getClientHandler))
-	group.GET("/oidc/clients/:id/meta", httpserver.Handle(oc.getClientMetaDataHandler))
-	group.PUT("/oidc/clients/:id", authMiddleware.Add(), httpserver.Handle(oc.updateClientHandler))
-	group.POST("/oidc/clients/:id/refresh", authMiddleware.Add(), httpserver.Handle(oc.refreshClientMetadataHandler))
-	group.DELETE("/oidc/clients/:id", authMiddleware.Add(), httpserver.Handle(oc.deleteClientHandler))
+	r.GET("/oidc/clients", authz.OidcClientsRead, httpserver.Handle(oc.listClientsHandler))
+	r.POST("/oidc/clients", authz.OidcClientsWrite, httpserver.Handle(oc.createClientHandler))
+	r.GET("/oidc/clients/:id", authz.OidcClientsRead, httpserver.Handle(oc.getClientHandler))
+	r.PUT("/oidc/clients/:id", authz.OidcClientsWrite, httpserver.Handle(oc.updateClientHandler))
+	r.POST("/oidc/clients/:id/refresh", authz.OidcClientsWrite, httpserver.Handle(oc.refreshClientMetadataHandler))
+	r.DELETE("/oidc/clients/:id", authz.OidcClientsWrite, httpserver.Handle(oc.deleteClientHandler))
 
-	group.PUT("/oidc/clients/:id/allowed-user-groups", authMiddleware.Add(), httpserver.Handle(oc.updateAllowedUserGroupsHandler))
-	group.GET("/oidc/clients/:id/secrets", authMiddleware.Add(), httpserver.Handle(oc.listClientSecretsHandler))
-	group.POST("/oidc/clients/:id/secrets", authMiddleware.Add(), httpserver.Handle(oc.createClientSecretHandler))
-	group.DELETE("/oidc/clients/:id/secrets/:secretId", authMiddleware.Add(), httpserver.Handle(oc.deleteClientSecretHandler))
+	r.PUT("/oidc/clients/:id/allowed-user-groups", authz.OidcClientsWrite, httpserver.Handle(oc.updateAllowedUserGroupsHandler))
+	r.GET("/oidc/clients/:id/secrets", authz.OidcClientsRead, httpserver.Handle(oc.listClientSecretsHandler))
+	r.POST("/oidc/clients/:id/secrets", authz.OidcClientsWrite, httpserver.Handle(oc.createClientSecretHandler))
+	r.DELETE("/oidc/clients/:id/secrets/:secretId", authz.OidcClientsWrite, httpserver.Handle(oc.deleteClientSecretHandler))
 
-	group.GET("/oidc/clients/:id/logo", httpserver.Handle(oc.getClientLogoHandler))
-	group.DELETE("/oidc/clients/:id/logo", authMiddleware.Add(), httpserver.Handle(oc.deleteClientLogoHandler))
-	group.POST("/oidc/clients/:id/logo", authMiddleware.Add(), fileSizeLimitMiddleware.Add(2<<20), httpserver.Handle(oc.updateClientLogoHandler))
+	r.Public().GET("/oidc/clients/:id/logo", httpserver.Handle(oc.getClientLogoHandler))
+	r.DELETE("/oidc/clients/:id/logo", authz.OidcClientsWrite, httpserver.Handle(oc.deleteClientLogoHandler))
+	r.POST("/oidc/clients/:id/logo", authz.OidcClientsWrite, fileSizeLimitMiddleware.Add(2<<20), httpserver.Handle(oc.updateClientLogoHandler))
 
-	group.GET("/oidc/clients/:id/preview/:userId", authMiddleware.Add(), httpserver.Handle(oc.getClientPreviewHandler))
+	// The preview renders a user's claims, so it is guarded by the user scope rather than the client scope
+	r.GET("/oidc/clients/:id/preview/:userId", authz.UsersRead, httpserver.Handle(oc.getClientPreviewHandler))
 
-	group.GET("/oidc/users/me/authorized-clients", authMiddleware.WithAdminNotRequired().Add(), httpserver.Handle(oc.listOwnAuthorizedClientsHandler))
-	group.GET("/oidc/users/:id/authorized-clients", authMiddleware.Add(), httpserver.Handle(oc.listAuthorizedClientsHandler))
+	r.GET("/oidc/users/me/authorized-clients", authz.AccountApps, httpserver.Handle(oc.listOwnAuthorizedClientsHandler))
+	r.GET("/oidc/users/:id/authorized-clients", authz.UsersRead, httpserver.Handle(oc.listAuthorizedClientsHandler))
 
-	group.DELETE("/oidc/users/me/authorized-clients/:clientId", authMiddleware.WithAdminNotRequired().Add(), httpserver.Handle(oc.revokeOwnClientAuthorizationHandler))
+	r.DELETE("/oidc/users/me/authorized-clients/:clientId", authz.AccountApps, httpserver.Handle(oc.revokeOwnClientAuthorizationHandler))
 
-	group.GET("/oidc/users/me/clients", authMiddleware.WithAdminNotRequired().Add(), httpserver.Handle(oc.listOwnAccessibleClientsHandler))
-
+	r.GET("/oidc/users/me/clients", authz.AccountApps, httpserver.Handle(oc.listOwnAccessibleClientsHandler))
 }
 
 type OidcController struct {
 	oidcService      *service.OidcService
 	appConfigService appconfig.AppConfigResolver
-}
-
-// getClientMetaDataHandler godoc
-// @Summary Get client metadata
-// @Description Get OIDC client metadata for discovery and configuration
-// @Tags OIDC
-// @Produce json
-// @Param id path string true "Client ID"
-// @Success 200 {object} dto.OidcClientMetaDataDto "Client metadata"
-// @Failure default {object} dto.ErrorDto "Error"
-// @Router /api/oidc/clients/{id}/meta [get]
-func (oc *OidcController) getClientMetaDataHandler(c *gin.Context) error {
-	clientId := c.Param("id")
-	client, err := oc.oidcService.GetClient(c.Request.Context(), clientId)
-	if err != nil {
-		return err
-	}
-
-	clientDto := dto.OidcClientMetaDataDto{}
-	if err := dto.MapStruct(client, &clientDto); err != nil {
-		return err
-	}
-
-	clientDto.HasDarkLogo = client.HasDarkLogo()
-	c.JSON(http.StatusOK, clientDto)
-	return nil
 }
 
 // getClientHandler godoc
@@ -173,7 +147,7 @@ func (oc *OidcController) createClientHandler(c *gin.Context) error {
 		return err
 	}
 
-	client, createdSecret, err := oc.oidcService.CreateClient(c.Request.Context(), input, c.GetString("userID"), config.AutoCreateOIDCClientSecret.IsTrue())
+	client, createdSecret, err := oc.oidcService.CreateClient(c.Request.Context(), input, authz.PrincipalFrom(c).UserID, config.AutoCreateOIDCClientSecret.IsTrue())
 	if err != nil {
 		return err
 	}
@@ -470,16 +444,17 @@ func (oc *OidcController) updateAllowedUserGroupsHandler(c *gin.Context) error {
 // @Summary List authorized clients for current user
 // @Description Get a paginated list of OIDC clients that the current user has authorized
 // @Tags OIDC
+// @Param search query string false "Search term to filter clients by name"
 // @Param pagination[page] query int false "Page number for pagination" default(1)
 // @Param pagination[limit] query int false "Number of items per page" default(20)
-// @Param sort[column] query string false "Column to sort by"
+// @Param sort[column] query string false "Column to sort by (name or lastUsedAt)"
 // @Param sort[direction] query string false "Sort direction (asc or desc)" default("asc")
 // @Param filters[hasLaunchURL] query bool false "Filter clients by whether a launch URL is configured"
 // @Success 200 {object} dto.Paginated[dto.AuthorizedOidcClientDto]
 // @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/oidc/users/me/authorized-clients [get]
 func (oc *OidcController) listOwnAuthorizedClientsHandler(c *gin.Context) error {
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	return oc.listAuthorizedClients(c, userID)
 }
 
@@ -488,9 +463,10 @@ func (oc *OidcController) listOwnAuthorizedClientsHandler(c *gin.Context) error 
 // @Description Get a paginated list of OIDC clients that a specific user has authorized
 // @Tags OIDC
 // @Param id path string true "User ID"
+// @Param search query string false "Search term to filter clients by name"
 // @Param pagination[page] query int false "Page number for pagination" default(1)
 // @Param pagination[limit] query int false "Number of items per page" default(20)
-// @Param sort[column] query string false "Column to sort by"
+// @Param sort[column] query string false "Column to sort by (name or lastUsedAt)"
 // @Param sort[direction] query string false "Sort direction (asc or desc)" default("asc")
 // @Param filters[hasLaunchURL] query bool false "Filter clients by whether a launch URL is configured"
 // @Success 200 {object} dto.Paginated[dto.AuthorizedOidcClientDto]
@@ -502,9 +478,10 @@ func (oc *OidcController) listAuthorizedClientsHandler(c *gin.Context) error {
 }
 
 func (oc *OidcController) listAuthorizedClients(c *gin.Context, userID string) error {
+	searchTerm := c.Query("search")
 	listRequestOptions := utils.ParseListRequestOptions(c)
 
-	authorizedClients, pagination, err := oc.oidcService.ListAuthorizedClients(c.Request.Context(), userID, listRequestOptions)
+	authorizedClients, pagination, err := oc.oidcService.ListAuthorizedClients(c.Request.Context(), userID, searchTerm, listRequestOptions)
 	if err != nil {
 		return err
 	}
@@ -533,7 +510,7 @@ func (oc *OidcController) listAuthorizedClients(c *gin.Context, userID string) e
 func (oc *OidcController) revokeOwnClientAuthorizationHandler(c *gin.Context) error {
 	clientID := c.Param("clientId")
 
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 
 	err := oc.oidcService.RevokeAuthorizedClient(c.Request.Context(), userID, clientID)
 	if err != nil {
@@ -548,20 +525,22 @@ func (oc *OidcController) revokeOwnClientAuthorizationHandler(c *gin.Context) er
 // @Summary List accessible OIDC clients for current user
 // @Description Get a list of OIDC clients that the current user can access
 // @Tags OIDC
+// @Param search query string false "Search term to filter clients by name"
 // @Param pagination[page] query int false "Page number for pagination" default(1)
 // @Param pagination[limit] query int false "Number of items per page" default(20)
-// @Param sort[column] query string false "Column to sort by"
+// @Param sort[column] query string false "Column to sort by (name or lastUsedAt)"
 // @Param sort[direction] query string false "Sort direction (asc or desc)" default("asc")
 // @Param filters[hasLaunchURL] query bool false "Filter clients by whether a launch URL is configured"
 // @Success 200 {object} dto.Paginated[dto.AccessibleOidcClientDto]
 // @Failure default {object} dto.ErrorDto "Error"
 // @Router /api/oidc/users/me/clients [get]
 func (oc *OidcController) listOwnAccessibleClientsHandler(c *gin.Context) error {
+	searchTerm := c.Query("search")
 	listRequestOptions := utils.ParseListRequestOptions(c)
 
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 
-	clients, pagination, err := oc.oidcService.ListAccessibleOidcClients(c.Request.Context(), userID, listRequestOptions)
+	clients, pagination, err := oc.oidcService.ListAccessibleOidcClients(c.Request.Context(), userID, searchTerm, listRequestOptions)
 	if err != nil {
 		return err
 	}
@@ -607,7 +586,7 @@ func (oc *OidcController) getClientPreviewHandler(c *gin.Context) error {
 		clientID,
 		userID,
 		strings.Split(scopes, " "),
-		c.GetString("authenticationMethod"))
+		authz.PrincipalFrom(c).AuthenticationMethod)
 
 	if err != nil {
 		return err

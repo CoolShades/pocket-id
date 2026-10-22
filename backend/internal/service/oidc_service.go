@@ -21,11 +21,11 @@ import (
 
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/backchannellogout"
-	"github.com/pocket-id/pocket-id/backend/internal/common"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"github.com/pocket-id/pocket-id/backend/internal/oidc"
+	"github.com/pocket-id/pocket-id/backend/internal/outbound"
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	imageutil "github.com/pocket-id/pocket-id/backend/internal/utils/image"
@@ -713,7 +713,7 @@ func (s *OidcService) UpdateAllowedUserGroups(ctx context.Context, id string, in
 	return client, nil
 }
 
-func (s *OidcService) ListAuthorizedClients(ctx context.Context, userID string, listRequestOptions utils.ListRequestOptions) ([]model.UserAuthorizedOidcClient, utils.PaginationResponse, error) {
+func (s *OidcService) ListAuthorizedClients(ctx context.Context, userID string, search string, listRequestOptions utils.ListRequestOptions) ([]model.UserAuthorizedOidcClient, utils.PaginationResponse, error) {
 	tx := s.db.Begin()
 	defer func() {
 		tx.Rollback()
@@ -732,20 +732,30 @@ func (s *OidcService) ListAuthorizedClients(ctx context.Context, userID string, 
 		return nil, utils.PaginationResponse{}, err
 	}
 
+	// Join the clients so the search, the launch URL filter and the name sort can use their columns
 	query := tx.
 		WithContext(ctx).
 		Model(&model.UserAuthorizedOidcClient{}).
 		Preload("Client").
-		Where("user_id = ?", userID)
+		Joins("JOIN oidc_clients ON oidc_clients.id = user_authorized_oidc_clients.client_id").
+		Where("user_authorized_oidc_clients.user_id = ?", userID)
+
+	if search != "" {
+		query = query.Where("LOWER(oidc_clients.name) LIKE ?", "%"+strings.ToLower(search)+"%")
+	}
 
 	// Apply the launch URL filter before pagination so hidden authorizations have their own page count
 	if hasLaunchURL, ok := getHasLaunchURLFilter(listRequestOptions); ok {
-		query = query.Joins("JOIN oidc_clients ON oidc_clients.id = user_authorized_oidc_clients.client_id")
 		if hasLaunchURL {
 			query = query.Where("oidc_clients.launch_url IS NOT NULL AND oidc_clients.launch_url <> ''")
 		} else {
 			query = query.Where("oidc_clients.launch_url IS NULL OR oidc_clients.launch_url = ''")
 		}
+	}
+
+	// The name lives on the joined client, so the generic sorting of the authorization model cannot handle it
+	if listRequestOptions.Sort.Column == "name" && utils.IsValidSortDirection(listRequestOptions.Sort.Direction) {
+		query = query.Order("LOWER(oidc_clients.name) " + utils.NormalizeSortDirection(listRequestOptions.Sort.Direction))
 	}
 
 	var authorizedClients []model.UserAuthorizedOidcClient
@@ -802,7 +812,7 @@ func (s *OidcService) RevokeAuthorizedClient(ctx context.Context, userID string,
 	return nil
 }
 
-func (s *OidcService) ListAccessibleOidcClients(ctx context.Context, userID string, listRequestOptions utils.ListRequestOptions) ([]dto.AccessibleOidcClientDto, utils.PaginationResponse, error) {
+func (s *OidcService) ListAccessibleOidcClients(ctx context.Context, userID string, search string, listRequestOptions utils.ListRequestOptions) ([]dto.AccessibleOidcClientDto, utils.PaginationResponse, error) {
 	tx := s.db.Begin()
 	defer func() {
 		tx.Rollback()
@@ -836,6 +846,10 @@ func (s *OidcService) ListAccessibleOidcClients(ctx context.Context, userID stri
 			WHERE oidc_clients_allowed_user_groups.oidc_client_id = oidc_clients.id
 			AND oidc_clients_allowed_user_groups.user_group_id IN (?))`, false, userGroupIDs)
 
+	if search != "" {
+		query = query.Where("LOWER(oidc_clients.name) LIKE ?", "%"+strings.ToLower(search)+"%")
+	}
+
 	// Apply the launch URL filter before pagination so the app launcher never contains empty pages
 	if hasLaunchURL, ok := getHasLaunchURLFilter(listRequestOptions); ok {
 		if hasLaunchURL {
@@ -850,9 +864,11 @@ func (s *OidcService) ListAccessibleOidcClients(ctx context.Context, userID stri
 	// Handle custom sorting for lastUsedAt column
 	var response utils.PaginationResponse
 	if listRequestOptions.Sort.Column == "lastUsedAt" && utils.IsValidSortDirection(listRequestOptions.Sort.Direction) {
+		// Never used clients share a NULL timestamp, so they are ordered by name to keep pages stable
 		query = query.
 			Joins("LEFT JOIN user_authorized_oidc_clients ON oidc_clients.id = user_authorized_oidc_clients.client_id AND user_authorized_oidc_clients.user_id = ?", userID).
-			Order("user_authorized_oidc_clients.last_used_at " + listRequestOptions.Sort.Direction + " NULLS LAST")
+			Order("user_authorized_oidc_clients.last_used_at " + utils.NormalizeSortDirection(listRequestOptions.Sort.Direction) + " NULLS LAST").
+			Order("LOWER(oidc_clients.name) ASC")
 	}
 
 	response, err = utils.PaginateFilterAndSort(listRequestOptions, query, &clients)
@@ -943,47 +959,23 @@ func httpClientWithCheckRedirect(source *http.Client, checkRedirect func(req *ht
 	return client
 }
 
-// checkLogoURLAllowed prevents SSRF by allowing only URLs that resolve to public IPs
-// URLs inside the icon library are exempt because the operator configured it, which lets a self-hosted mirror live on the local network
-func checkLogoURLAllowed(ctx context.Context, u *url.URL) error {
-	if common.EnvConfig.IsIconLibraryURL(u) {
-		return nil
-	}
-
-	private, err := utils.IsURLPrivate(ctx, u)
-	if err != nil {
-		return apperror.LogoDownloadFailed(err)
-	} else if private {
-		return apperror.InvalidLogoURL(errors.New("private IP addresses are not allowed"))
-	}
-
-	return nil
-}
-
 func (s *OidcService) downloadAndSaveLogoFromURL(parentCtx context.Context, clientID string, raw string, light bool) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return apperror.InvalidLogoURL(err)
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return apperror.InvalidLogoURL(fmt.Errorf("URL must use HTTP or HTTPS and include a host"))
+		return apperror.InvalidLogoURL(errors.New("URL must use HTTP or HTTPS and include a host"))
 	}
 
 	ctx, cancel := context.WithTimeout(parentCtx, 15*time.Second)
 	defer cancel()
 
-	err = checkLogoURLAllowed(ctx, u)
-	if err != nil {
-		return err
-	}
-
-	// We need to check this on redirects too
-	client := httpClientWithCheckRedirect(s.httpClient, func(r *http.Request, via []*http.Request) error {
+	client := httpClientWithCheckRedirect(s.httpClient, func(_ *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return apperror.InvalidLogoURL(errors.New("stopped after 10 redirects"))
 		}
-
-		return checkLogoURLAllowed(r.Context(), r.URL)
+		return nil
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
@@ -997,6 +989,9 @@ func (s *OidcService) downloadAndSaveLogoFromURL(parentCtx context.Context, clie
 	if err != nil {
 		if appErr, ok := errors.AsType[*apperror.Error](err); ok {
 			return appErr
+		}
+		if blockedErr, ok := errors.AsType[*outbound.BlockedError](err); ok {
+			return apperror.InvalidLogoURL(blockedErr)
 		}
 		return apperror.LogoDownloadFailed(err)
 	}

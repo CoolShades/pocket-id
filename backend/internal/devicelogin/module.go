@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
+	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/iplocation"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
@@ -24,7 +26,9 @@ type ReauthenticationTokenConsumer interface {
 }
 
 type AuditLogger interface {
-	Create(ctx context.Context, event model.AuditLogEvent, ipAddress, userAgent, userID string, data model.AuditLogData, tx *gorm.DB) (model.AuditLog, bool)
+	CreateSignIn(ctx context.Context, event auditlogs.Event, ipAddress, userAgent, userID, browserToken string, tx *gorm.DB, notificationMode appconfig.AppConfigValue) auditlogs.SignInResult
+	SendSignInNotification(ctx context.Context, result auditlogs.SignInResult)
+	Create(ctx context.Context, event auditlogs.Event, ipAddress, userAgent, userID string, data auditlogs.Data, tx *gorm.DB) (auditlogs.AuditLog, bool)
 	DeviceStringFromUserAgent(userAgent string) string
 }
 
@@ -65,9 +69,9 @@ func New(deps Dependencies) (*Module, error) {
 }
 
 // RegisterRoutes mounts the public exchange and authenticated verification endpoints
-func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, browserAuth, createRateLimit, exchangeRateLimit, verificationRateLimit gin.HandlerFunc) {
-	apiGroup.POST("/device-login/requests", createRateLimit, httpserver.Handle(m.handler.createRequest))
-	apiGroup.POST("/device-login/requests/:id/exchange", exchangeRateLimit, httpserver.Handle(m.handler.exchangeRequest))
-	apiGroup.POST("/device-login/verification", verificationRateLimit, browserAuth, httpserver.Handle(m.handler.inspectRequest))
-	apiGroup.POST("/device-login/verification/decision", verificationRateLimit, browserAuth, httpserver.Handle(m.handler.decideRequest))
+func (m *Module) RegisterRoutes(r *authz.Router, createRateLimit, exchangeRateLimit, verificationRateLimit gin.HandlerFunc) {
+	r.Public().POST("/device-login/requests", createRateLimit, httpserver.Handle(m.handler.createRequest))
+	r.Public().POST("/device-login/requests/:id/exchange", exchangeRateLimit, httpserver.Handle(m.handler.exchangeRequest))
+	r.POST("/device-login/verification", authz.AccountSession, verificationRateLimit, httpserver.Handle(m.handler.inspectRequest))
+	r.POST("/device-login/verification/decision", authz.AccountSession, verificationRateLimit, httpserver.Handle(m.handler.decideRequest))
 }

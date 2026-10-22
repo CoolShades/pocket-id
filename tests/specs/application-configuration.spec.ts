@@ -246,9 +246,12 @@ test('Update email configuration', async ({ page }) => {
 	await page.getByLabel('SMTP Password').fill('password');
 	await page.getByLabel('SMTP From').fill('test@gmail.com');
 	await page.getByLabel('Email Login Notification').click();
+	await page.getByRole('option', { name: /^Unrecognized browser/ }).click();
 	await page.getByLabel('Email Login Code Requested by User').click();
 	await page.getByLabel('Email Login Code from Admin').click();
 	await page.getByLabel('API Key Expiration').click();
+	await page.getByLabel('Email Verification', { exact: true }).click();
+	await page.getByRole('option', { name: /^Required/ }).click();
 
 	await saveUnsavedChanges(page);
 
@@ -259,10 +262,30 @@ test('Update email configuration', async ({ page }) => {
 	await expect(page.getByLabel('SMTP User')).toHaveValue('test@gmail.com');
 	await expect(page.getByLabel('SMTP Password')).toHaveValue('password');
 	await expect(page.getByLabel('SMTP From')).toHaveValue('test@gmail.com');
-	await expect(page.getByLabel('Email Login Notification')).toBeChecked();
+	await expect(page.getByLabel('Email Login Notification')).toContainText('Unrecognized browser');
 	await expect(page.getByLabel('Email Login Code Requested by User')).toBeChecked();
 	await expect(page.getByLabel('Email Login Code from Admin')).toBeChecked();
 	await expect(page.getByLabel('API Key Expiration')).toBeChecked();
+	await expect(page.getByLabel('Email Verification', { exact: true })).toContainText('Required');
+});
+
+test('Required email verification turns off emails verified by default', async ({ page }) => {
+	await page.getByRole('tab', { name: 'Email' }).click();
+
+	const emailsVerifiedByDefault = page.getByLabel('Emails verified by default');
+	await emailsVerifiedByDefault.click();
+	await expect(emailsVerifiedByDefault).toBeChecked();
+
+	await page.getByLabel('Email Verification', { exact: true }).click();
+	await page.getByRole('option', { name: /^Required/ }).click();
+
+	await expect(emailsVerifiedByDefault).not.toBeChecked();
+	await expect(emailsVerifiedByDefault).toBeDisabled();
+
+	await page.getByLabel('Email Verification', { exact: true }).click();
+	await page.getByRole('option', { name: /^Optional/ }).click();
+
+	await expect(emailsVerifiedByDefault).toBeEnabled();
 });
 
 test('Save LDAP configuration while LDAP remains disabled', async ({ page }) => {

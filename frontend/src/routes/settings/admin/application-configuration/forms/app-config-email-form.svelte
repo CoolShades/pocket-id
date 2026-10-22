@@ -30,6 +30,34 @@
 		tls: 'TLS'
 	};
 
+	const notificationOptions = $derived({
+		disabled: { label: m.never(), description: m.login_notification_disabled_description() },
+		always: {
+			label: m.login_notification_always(),
+			description: m.login_notification_always_description()
+		},
+		ipAndUserAgent: {
+			label: m.login_notification_ip_and_user_agent(),
+			description: m.login_notification_ip_and_user_agent_description()
+		},
+		browserRecognition: {
+			label: m.login_notification_browser_recognition(),
+			description: m.login_notification_browser_recognition_description()
+		}
+	});
+
+	const emailVerificationOptions = $derived({
+		disabled: { label: m.disabled(), description: m.email_verification_disabled_description() },
+		optional: {
+			label: m.email_verification_optional(),
+			description: m.email_verification_optional_description()
+		},
+		required: {
+			label: m.email_verification_required(),
+			description: m.email_verification_required_description()
+		}
+	});
+
 	let isSendingTestEmail = $state(false);
 
 	const formSchema = z
@@ -47,9 +75,14 @@
 			smtpTls: z.enum(['none', 'starttls', 'tls']),
 			smtpSkipCertVerify: z.boolean(),
 			emailOneTimeAccessAsUnauthenticatedEnabled: z.boolean(),
-			emailVerificationEnabled: z.boolean(),
+			emailVerification: z.enum(['disabled', 'optional', 'required']),
 			emailOneTimeAccessAsAdminEnabled: z.boolean(),
-			emailLoginNotificationEnabled: z.boolean(),
+			emailLoginNotificationMode: z.enum([
+				'disabled',
+				'always',
+				'ipAndUserAgent',
+				'browserRecognition'
+			]),
 			emailApiKeyExpirationEnabled: z.boolean()
 		})
 		.superRefine((data, ctx) => {
@@ -61,9 +94,7 @@
 
 			const emailFields: (keyof z.infer<typeof formSchema>)[] = [
 				'emailOneTimeAccessAsUnauthenticatedEnabled',
-				'emailVerificationEnabled',
 				'emailOneTimeAccessAsAdminEnabled',
-				'emailLoginNotificationEnabled',
 				'emailApiKeyExpirationEnabled'
 			];
 
@@ -84,8 +115,20 @@
 			const anyProvided = requiredSmtpFields.some((f) => !!data[f]);
 			requireFieldsWhen(anyProvided, m.smtp_field_required_when_other_provided());
 
-			const emailEnabled = emailFields.some((f) => data[f]);
+			const emailEnabled =
+				data.emailLoginNotificationMode !== 'disabled' ||
+				data.emailVerification !== 'disabled' ||
+				emailFields.some((f) => data[f]);
 			requireFieldsWhen(emailEnabled, m.smtp_field_required_when_email_enabled());
+
+			// Requiring verification only protects accounts that have an email
+			if (data.emailVerification === 'required' && !data.requireUserEmail) {
+				ctx.addIssue({
+					code: 'custom',
+					path: ['emailVerification'],
+					message: m.email_verification_required_needs_user_email()
+				});
+			}
 		});
 
 	const formStore = createForm(formSchema, pickSchemaValues(formSchema, appConfig));
@@ -154,10 +197,53 @@
 				description={m.require_user_email_description()}
 				bind:checked={$inputs.requireUserEmail.value}
 			/>
+			<Field.Field>
+				<div>
+					<Field.Label for="email-verification">{m.email_verification()}</Field.Label>
+					<Field.Description>{m.email_verification_description()}</Field.Description>
+				</div>
+				<Select.Root
+					type="single"
+					disabled={$appConfigStore.uiConfigDisabled}
+					value={$inputs.emailVerification.value}
+					allowDeselect={false}
+					onValueChange={(value) => {
+						$inputs.emailVerification.value = value as AllAppConfig['emailVerification'];
+						// Emails verified by default would let every new account skip the verification
+						if (value === 'required') {
+							$inputs.emailsVerified.value = false;
+						}
+					}}
+				>
+					<Select.Trigger
+						id="email-verification"
+						class="w-full"
+						aria-invalid={!!$inputs.emailVerification.error}
+					>
+						{emailVerificationOptions[$inputs.emailVerification.value].label}
+					</Select.Trigger>
+					<Select.Content class="w-[calc(var(--bits-select-anchor-width)+--spacing(3))]">
+						<Select.Group>
+							{#each Object.entries(emailVerificationOptions) as [value, option] (value)}
+								<Select.Item {value} label={option.label}>
+									<div class="flex flex-col items-start gap-1 whitespace-normal">
+										<span class="font-medium">{option.label}</span>
+										<span class="text-muted-foreground text-xs">{option.description}</span>
+									</div>
+								</Select.Item>
+							{/each}
+						</Select.Group>
+					</Select.Content>
+				</Select.Root>
+				{#if $inputs.emailVerification.error}
+					<Field.Error>{$inputs.emailVerification.error}</Field.Error>
+				{/if}
+			</Field.Field>
 			<SwitchWithLabel
 				id="emails-verified-by-default"
 				label={m.emails_verified_by_default()}
 				description={m.emails_verified_by_default_description()}
+				disabled={$inputs.emailVerification.value === 'required'}
 				bind:checked={$inputs.emailsVerified.value}
 			/>
 		</div>
@@ -194,18 +280,37 @@
 		</div>
 		<h4 class="mt-10 text-lg font-semibold">{m.enabled_emails()}</h4>
 		<div class="mt-4 flex flex-col gap-5">
-			<SwitchWithLabel
-				id="email-login-notification"
-				label={m.email_login_notification()}
-				description={m.send_an_email_to_the_user_when_they_log_in_from_a_new_device()}
-				bind:checked={$inputs.emailLoginNotificationEnabled.value}
-			/>
-			<SwitchWithLabel
-				id="email-verification"
-				label={m.email_verification()}
-				description={m.email_verification_description()}
-				bind:checked={$inputs.emailVerificationEnabled.value}
-			/>
+			<Field.Field>
+				<div>
+					<Field.Label for="email-login-notification">{m.email_login_notification()}</Field.Label>
+					<Field.Description>{m.email_login_notification_description()}</Field.Description>
+				</div>
+				<Select.Root
+					type="single"
+					disabled={$appConfigStore.uiConfigDisabled}
+					value={$inputs.emailLoginNotificationMode.value}
+					allowDeselect={false}
+					onValueChange={(value) =>
+						($inputs.emailLoginNotificationMode.value =
+							value as AllAppConfig['emailLoginNotificationMode'])}
+				>
+					<Select.Trigger id="email-login-notification" class="w-full">
+						{notificationOptions[$inputs.emailLoginNotificationMode.value].label}
+					</Select.Trigger>
+					<Select.Content class="w-[calc(var(--bits-select-anchor-width)+--spacing(3))]">
+						<Select.Group>
+							{#each Object.entries(notificationOptions) as [value, option] (value)}
+								<Select.Item {value} label={option.label}>
+									<div class="flex flex-col items-start gap-1 whitespace-normal">
+										<span class="font-medium">{option.label}</span>
+										<span class="text-muted-foreground text-xs">{option.description}</span>
+									</div>
+								</Select.Item>
+							{/each}
+						</Select.Group>
+					</Select.Content>
+				</Select.Root>
+			</Field.Field>
 			<SwitchWithLabel
 				id="email-login-admin"
 				label={m.email_login_code_from_admin()}

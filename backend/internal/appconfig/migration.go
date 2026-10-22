@@ -59,6 +59,12 @@ func LoadLegacyConfig(ctx context.Context, db *gorm.DB) (map[string]string, erro
 func fromLegacyConfig(legacyCfg map[string]string) (*AppConfigModel, error) {
 	// Start from the default configuration, then override with the values from the legacy config
 	dest := getDefaultConfig()
+	if legacyCfg["emailLoginNotificationMode"] == "" {
+		dest.EmailLoginNotificationMode = legacyLoginNotificationMode(AppConfigValue(legacyCfg["emailLoginNotificationEnabled"]))
+	}
+	if legacyCfg["emailVerification"] == "" {
+		dest.EmailVerification = legacyEmailVerification(AppConfigValue(legacyCfg["emailVerificationEnabled"]))
+	}
 
 	rt := reflect.ValueOf(dest).Elem().Type()
 	rv := reflect.ValueOf(dest).Elem()

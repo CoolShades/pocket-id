@@ -7,7 +7,7 @@ export type AppConfig = {
 	allowUserSignups: 'disabled' | 'withToken' | 'open';
 	emailOneTimeAccessAsUnauthenticatedEnabled: boolean;
 	emailOneTimeAccessAsAdminEnabled: boolean;
-	emailVerificationEnabled: boolean;
+	emailVerification: 'disabled' | 'optional' | 'required';
 	ldapEnabled: boolean;
 	disableAnimations: boolean;
 	uiConfigDisabled: boolean;
@@ -31,7 +31,7 @@ export type AllAppConfig = AppConfig & {
 	smtpPassword: string;
 	smtpTls: 'none' | 'starttls' | 'tls';
 	smtpSkipCertVerify: boolean;
-	emailLoginNotificationEnabled: boolean;
+	emailLoginNotificationMode: 'disabled' | 'always' | 'ipAndUserAgent' | 'browserRecognition';
 	emailApiKeyExpirationEnabled: boolean;
 	// LDAP
 	ldapUrl: string;

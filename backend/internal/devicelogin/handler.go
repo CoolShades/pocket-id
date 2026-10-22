@@ -8,6 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
+	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/utils/cookie"
@@ -72,7 +74,8 @@ func (h *handler) exchangeRequest(c *gin.Context) error {
 	requestID := c.Param("id")
 	deviceToken, _ := c.Cookie(cookie.DeviceLoginTokenCookieName)
 	sessionDuration := dbConfig.SessionDuration.AsDurationMinutes()
-	user, accessToken, status, err := h.service.Exchange(c.Request.Context(), requestID, deviceToken, c.ClientIP(), c.Request.UserAgent(), sessionDuration)
+	browserToken, _ := c.Cookie(cookie.KnownBrowserCookieName)
+	user, tokens, status, err := h.service.Exchange(c.Request.Context(), requestID, deviceToken, c.ClientIP(), c.Request.UserAgent(), browserToken, sessionDuration, dbConfig.EmailLoginNotificationMode)
 	if err != nil {
 		if c.Request.Context().Err() != nil {
 			// Context canceled = the client stopped the request
@@ -88,7 +91,10 @@ func (h *handler) exchangeRequest(c *gin.Context) error {
 	}
 
 	maxAge := int(sessionDuration.Seconds())
-	cookie.AddAccessTokenCookie(c, maxAge, accessToken)
+	cookie.AddAccessTokenCookie(c, maxAge, tokens.AccessToken)
+	if tokens.KnownBrowserToken != "" {
+		cookie.AddKnownBrowserCookie(c, tokens.KnownBrowserToken, int(auditlogs.KnownBrowserLifetime.Seconds()))
+	}
 	c.JSON(http.StatusOK, dto.UserDto(user))
 	return nil
 }
@@ -134,7 +140,7 @@ func (h *handler) decideRequest(c *gin.Context) error {
 	}
 
 	reauthenticationToken, _ := c.Cookie(cookie.ReauthenticationTokenCookieName)
-	err = h.service.Decide(c.Request.Context(), input.Code, input.Decision, c.GetString("userID"), reauthenticationToken)
+	err = h.service.Decide(c.Request.Context(), input.Code, input.Decision, authz.PrincipalFrom(c).UserID, reauthenticationToken)
 	if err != nil {
 		return err
 	}

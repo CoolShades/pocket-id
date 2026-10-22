@@ -10,6 +10,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
+	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
+	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
 )
@@ -24,7 +26,9 @@ type TokenService interface {
 }
 
 type AuditLogger interface {
-	Create(ctx context.Context, event model.AuditLogEvent, ipAddress, userAgent, userID string, data model.AuditLogData, tx *gorm.DB) (model.AuditLog, bool)
+	CreateSignIn(ctx context.Context, event auditlogs.Event, ipAddress, userAgent, userID, browserToken string, tx *gorm.DB, notificationMode appconfig.AppConfigValue) auditlogs.SignInResult
+	SendSignInNotification(ctx context.Context, result auditlogs.SignInResult)
+	Create(ctx context.Context, event auditlogs.Event, ipAddress, userAgent, userID string, data auditlogs.Data, tx *gorm.DB) (auditlogs.AuditLog, bool)
 }
 
 type UserProvider interface {
@@ -63,10 +67,10 @@ func New(deps Dependencies) (*Module, error) {
 }
 
 // RegisterRoutes mounts the one-time access token endpoints
-// auth guards the admin routes, while the rate limiters throttle the public exchange and email endpoints
-func (m *Module) RegisterRoutes(apiGroup *gin.RouterGroup, auth, exchangeRateLimit, emailRateLimit gin.HandlerFunc) {
-	apiGroup.POST("/users/:id/one-time-access-token", auth, httpserver.Handle(m.handler.createTokenForUser))
-	apiGroup.POST("/users/:id/one-time-access-email", auth, httpserver.Handle(m.handler.requestEmailAsAdmin))
-	apiGroup.POST("/one-time-access-token/:token", exchangeRateLimit, httpserver.Handle(m.handler.exchangeToken))
-	apiGroup.POST("/one-time-access-email", emailRateLimit, httpserver.Handle(m.handler.requestEmailAsUnauthenticatedUser))
+// The rate limiters throttle the public exchange and email endpoints
+func (m *Module) RegisterRoutes(r *authz.Router, exchangeRateLimit, emailRateLimit gin.HandlerFunc) {
+	r.POST("/users/:id/one-time-access-token", authz.UsersWrite, httpserver.Handle(m.handler.createTokenForUser))
+	r.POST("/users/:id/one-time-access-email", authz.UsersWrite, httpserver.Handle(m.handler.requestEmailAsAdmin))
+	r.Public().POST("/one-time-access-token/:token", exchangeRateLimit, httpserver.Handle(m.handler.exchangeToken))
+	r.Public().POST("/one-time-access-email", emailRateLimit, httpserver.Handle(m.handler.requestEmailAsUnauthenticatedUser))
 }

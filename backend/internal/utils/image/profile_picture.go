@@ -7,6 +7,8 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"strings"
+	"sync"
 
 	"github.com/boxes-ltd/imaging"
 	"github.com/disintegration/imageorient"
@@ -15,12 +17,15 @@ import (
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/webp"
 
+	"github.com/pocket-id/pocket-id/backend/internal/utils"
 	"github.com/pocket-id/pocket-id/backend/resources"
 )
 
 const profilePictureSize = 300
 
 var ErrInvalidImage = errors.New("invalid image")
+
+var resizeSlots = make(chan struct{}, 2)
 
 // CreateProfilePicture resizes the profile picture to a square and encodes it as PNG
 func CreateProfilePicture(file io.ReadSeeker) (io.ReadSeeker, error) {
@@ -32,6 +37,9 @@ func CreateProfilePicture(file io.ReadSeeker) (io.ReadSeeker, error) {
 	if validationErr != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidImage, validationErr)
 	}
+
+	resizeSlots <- struct{}{}
+	defer func() { <-resizeSlots }()
 
 	// Attempt standard formats first
 	img, _, err := imageorient.Decode(file)
@@ -52,7 +60,7 @@ func CreateProfilePicture(file io.ReadSeeker) (io.ReadSeeker, error) {
 	}
 
 	// Resize to square
-	img = imaging.Fill(img, profilePictureSize, profilePictureSize, imaging.Center, imaging.Lanczos)
+	img = imaging.Resize(centerSquare(img), profilePictureSize, profilePictureSize, imaging.Lanczos)
 
 	// Encode back to PNG
 	var buf bytes.Buffer
@@ -63,21 +71,74 @@ func CreateProfilePicture(file io.ReadSeeker) (io.ReadSeeker, error) {
 	return bytes.NewReader(buf.Bytes()), nil
 }
 
+func centerSquare(img image.Image) image.Image {
+	b := img.Bounds()
+	side := min(b.Dx(), b.Dy())
+
+	sub, ok := img.(interface {
+		SubImage(r image.Rectangle) image.Image
+	})
+	if !ok {
+		return imaging.CropCenter(img, side, side)
+	}
+
+	x := b.Min.X + (b.Dx()-side)/2
+	y := b.Min.Y + (b.Dy()-side)/2
+	return sub.SubImage(image.Rect(x, y, x+side, y+side))
+}
+
+var loadInitialsFont = sync.OnceValues(func() (*opentype.Font, error) {
+	fontBytes, err := resources.FS.ReadFile("fonts/Gloock.ttf")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read font file: %w", err)
+	}
+
+	fontFace, err := opentype.Parse(fontBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse font: %w", err)
+	}
+
+	return fontFace, nil
+})
+
+// Initials returns the initials shown on the default profile picture
+func Initials(firstName, lastName, username string) string {
+	// The font only covers Latin, so names it can't render fall back to the username, which is always ASCII
+	initials := strings.ToUpper(utils.GetFirstCharacter(firstName) + utils.GetFirstCharacter(lastName))
+	if initials != "" && canRenderInitials(initials) {
+		return initials
+	}
+
+	return strings.ToUpper(utils.GetFirstCharacter(username))
+}
+
+// canRenderInitials reports whether the initials font has a glyph for every character of the initials
+// The font only covers Latin, so other scripts would otherwise be drawn as empty boxes
+func canRenderInitials(initials string) bool {
+	fontFace, err := loadInitialsFont()
+	if err != nil {
+		return false
+	}
+
+	for _, r := range initials {
+		idx, err := fontFace.GlyphIndex(nil, r)
+		if err != nil || idx == 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
 // CreateDefaultProfilePicture creates a profile picture with the initials
 func CreateDefaultProfilePicture(initials string) (*bytes.Buffer, error) {
 	// Create a blank image with a white background
 	img := imaging.New(profilePictureSize, profilePictureSize, color.RGBA{R: 255, G: 255, B: 255, A: 255})
 
 	// Load the font
-	fontBytes, err := resources.FS.ReadFile("fonts/Gloock.ttf")
+	fontFace, err := loadInitialsFont()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read font file: %w", err)
-	}
-
-	// Parse the font
-	fontFace, err := opentype.Parse(fontBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse font: %w", err)
+		return nil, err
 	}
 
 	// Create a font.Face with a specific size

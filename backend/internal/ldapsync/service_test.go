@@ -1,8 +1,11 @@
 package ldapsync
 
 import (
+	"bytes"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 	"github.com/stretchr/testify/assert"
@@ -12,6 +15,7 @@ import (
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
 	"github.com/pocket-id/pocket-id/backend/internal/model"
+	datatype "github.com/pocket-id/pocket-id/backend/internal/model/types"
 	"github.com/pocket-id/pocket-id/backend/internal/service"
 	"github.com/pocket-id/pocket-id/backend/internal/storage"
 	testutils "github.com/pocket-id/pocket-id/backend/internal/utils/testing"
@@ -43,6 +47,37 @@ func (c *fakeLDAPClient) Bind(_, _ string) error {
 
 func (c *fakeLDAPClient) Close() error {
 	return nil
+}
+
+func TestSaveProfilePictureRejectsOversizedDownload(t *testing.T) {
+	oversized := bytes.Repeat([]byte{0}, 2*1024*1024+1)
+
+	// Cover both a declared Content-Length and a chunked response that hides its size until it is read
+	tests := []struct {
+		name    string
+		chunked bool
+	}{
+		{name: "content length", chunked: false},
+		{name: "chunked", chunked: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.chunked {
+					w.(http.Flusher).Flush()
+				}
+				_, _ = w.Write(oversized)
+			}))
+			t.Cleanup(server.Close)
+
+			svc := newService(Dependencies{HTTPClient: server.Client()})
+
+			err := svc.saveProfilePicture(t.Context(), "user-id", server.URL+"/picture.png")
+
+			require.ErrorContains(t, err, "must not exceed 2 MB")
+		})
+	}
 }
 
 func TestLdapServiceSyncAllReconcilesUsersAndGroups(t *testing.T) {
@@ -196,6 +231,84 @@ func TestLdapServiceSyncAllMapsPosixGroupMemberUid(t *testing.T) {
 	assert.ElementsMatch(t, []string{"alice", "bob"}, usernames(group.Users))
 }
 
+func TestLdapServiceSyncAllKeepsDistinctDNMemberships(t *testing.T) {
+	tests := []struct {
+		name       string
+		memberDN   string
+		attackerDN string
+	}{
+		{
+			name:       "escaped comma",
+			memberDN:   "cn=admin,ou=staff,dc=example,dc=com",
+			attackerDN: `cn=admin\,ou=staff,dc=example,dc=com`,
+		},
+		{
+			name:       "escaped plus",
+			memberDN:   "cn=admin+ou=staff,dc=example,dc=com",
+			attackerDN: `cn=admin\+ou=staff,dc=example,dc=com`,
+		},
+	}
+
+	for _, tt := range tests {
+		for _, attackerFirst := range []bool{false, true} {
+			order := "/attacker last"
+			if attackerFirst {
+				order = "/attacker first"
+			}
+			t.Run(tt.name+order, func(t *testing.T) {
+				// Keep the usernames and immutable IDs distinct so only DN resolution can confuse the users
+				entries := []*ldap.Entry{
+					ldapEntry(tt.memberDN, map[string][]string{
+						"entryUUID": {"u-admin"},
+						"uid":       {"admin"},
+						"givenName": {"Admin"},
+						"sn":        {"User"},
+					}),
+					ldapEntry(tt.attackerDN, map[string][]string{
+						"entryUUID": {"u-attacker"},
+						"uid":       {"attacker"},
+						"givenName": {"Attacker"},
+						"sn":        {"User"},
+					}),
+				}
+				if attackerFirst {
+					entries[0], entries[1] = entries[1], entries[0]
+				}
+
+				// Exercise the persisted admin flag and ordinary group memberships through the same sync
+				service, db := newTestLdapService(t, newFakeLDAPClient(
+					ldapSearchResult(entries...),
+					ldapSearchResult(
+						ldapEntry("cn=admins,ou=groups,dc=example,dc=com", map[string][]string{
+							"entryUUID": {"g-admins"},
+							"cn":        {"admins"},
+							"member":    {tt.memberDN},
+						}),
+						ldapEntry("cn=restricted,ou=groups,dc=example,dc=com", map[string][]string{
+							"entryUUID": {"g-restricted"},
+							"cn":        {"restricted"},
+							"member":    {tt.memberDN},
+						}),
+					),
+				))
+				require.NoError(t, service.SyncAll(t.Context(), defaultTestLDAPAppConfig()))
+
+				var admin, attacker model.User
+				require.NoError(t, db.First(&admin, "ldap_id = ?", "u-admin").Error)
+				require.NoError(t, db.First(&attacker, "ldap_id = ?", "u-attacker").Error)
+				assert.True(t, admin.IsAdmin)
+				assert.False(t, attacker.IsAdmin)
+
+				for _, groupID := range []string{"g-admins", "g-restricted"} {
+					var group model.UserGroup
+					require.NoError(t, db.Preload("Users").First(&group, "ldap_id = ?", groupID).Error)
+					assert.Equal(t, []string{"admin"}, usernames(group.Users))
+				}
+			})
+		}
+	}
+}
+
 func TestLdapServiceSyncAllHandlesDuplicateLDAPIDsInSingleRun(t *testing.T) {
 	service, db := newTestLdapService(t, newFakeLDAPClient(
 		ldapSearchResult(
@@ -246,6 +359,111 @@ func TestLdapServiceSyncAllHandlesDuplicateLDAPIDsInSingleRun(t *testing.T) {
 	assert.Equal(t, "team-renamed", groups[0].Name)
 	assert.Equal(t, "team-renamed", groups[0].FriendlyName)
 	assert.ElementsMatch(t, []string{"alice"}, usernames(groups[0].Users))
+}
+
+func TestLdapServiceSyncAllBumpsUpdatedAtOfSoftDeletedUsers(t *testing.T) {
+	service, db := newTestLdapService(t, newFakeLDAPClient(ldapSearchResult(), ldapSearchResult()))
+
+	lastSync := datatype.DateTime(time.Now().Add(-time.Hour))
+	goneLdapID := "u-gone"
+	disabledLdapID := "u-disabled"
+
+	require.NoError(t, db.Create(&model.User{
+		Username:  "gone",
+		Email:     new("gone@example.com"),
+		LdapID:    &goneLdapID,
+		UpdatedAt: &lastSync,
+	}).Error)
+
+	require.NoError(t, db.Create(&model.User{
+		Username:  "disabled",
+		Email:     new("disabled@example.com"),
+		LdapID:    &disabledLdapID,
+		Disabled:  true,
+		UpdatedAt: &lastSync,
+	}).Error)
+
+	err := service.SyncAll(t.Context(), defaultTestLDAPAppConfig())
+	require.NoError(t, err)
+
+	// The SCIM sync only pushes users whose UpdatedAt is newer than the remote copy, so disabling a user must bump it
+	var gone model.User
+	require.NoError(t, db.First(&gone, "ldap_id = ?", goneLdapID).Error)
+	assert.True(t, gone.Disabled)
+	require.NotNil(t, gone.UpdatedAt)
+	assert.True(t, gone.UpdatedAt.ToTime().After(lastSync.ToTime()))
+
+	// A user that an earlier sync already disabled is unchanged and keeps its timestamp
+	var disabled model.User
+	require.NoError(t, db.First(&disabled, "ldap_id = ?", disabledLdapID).Error)
+	assert.True(t, disabled.Disabled)
+	require.NotNil(t, disabled.UpdatedAt)
+	assert.Equal(t, lastSync.ToTime().Unix(), disabled.UpdatedAt.ToTime().Unix())
+}
+
+func TestLdapServiceSyncAllSkipsUsersWithoutEmailWhenEmailIsRequired(t *testing.T) {
+	service, db := newTestLdapService(t, newFakeLDAPClient(
+		ldapSearchResult(
+			ldapEntry("uid=alice,ou=people,dc=example,dc=com", map[string][]string{
+				"entryUUID": {"u-alice"},
+				"uid":       {"alice"},
+				"mail":      {"alice@example.com"},
+				"givenName": {"Alice"},
+				"sn":        {"Jones"},
+			}),
+			ldapEntry("uid=service,ou=people,dc=example,dc=com", map[string][]string{
+				"entryUUID": {"u-service"},
+				"uid":       {"service"},
+				"givenName": {"Service"},
+				"sn":        {"Account"},
+			}),
+			ldapEntry("uid=bob,ou=people,dc=example,dc=com", map[string][]string{
+				"entryUUID": {"u-bob"},
+				"uid":       {"bob"},
+				"givenName": {"Bob"},
+				"sn":        {"Brown"},
+			}),
+		),
+		ldapSearchResult(
+			ldapEntry("cn=team,ou=groups,dc=example,dc=com", map[string][]string{
+				"entryUUID": {"g-team"},
+				"cn":        {"team"},
+				"member": {
+					"uid=alice,ou=people,dc=example,dc=com",
+					"uid=service,ou=people,dc=example,dc=com",
+				},
+			}),
+		),
+	))
+
+	// Bob was synced earlier, before his mail attribute was removed in LDAP
+	bobLdapID := "u-bob"
+	require.NoError(t, db.Create(&model.User{
+		Username:  "bob",
+		Email:     new("bob@example.com"),
+		FirstName: "Bob",
+		LastName:  "Brown",
+		LdapID:    &bobLdapID,
+	}).Error)
+
+	config := defaultTestLDAPAppConfig()
+	config.RequireUserEmail = "true"
+
+	err := service.SyncAll(t.Context(), config)
+	require.NoError(t, err)
+
+	var users []model.User
+	require.NoError(t, db.Order("username").Find(&users).Error)
+	assert.Equal(t, []string{"alice", "bob"}, usernames(users))
+
+	var bob model.User
+	require.NoError(t, db.First(&bob, "ldap_id = ?", bobLdapID).Error)
+	assert.Equal(t, new("bob@example.com"), bob.Email)
+	assert.False(t, bob.Disabled)
+
+	var team model.UserGroup
+	require.NoError(t, db.Preload("Users").First(&team, "ldap_id = ?", "g-team").Error)
+	assert.Equal(t, []string{"alice"}, usernames(team.Users))
 }
 
 func TestLdapServiceSyncAllSetsAdminFromGroupMembership(t *testing.T) {
@@ -363,12 +581,12 @@ func newTestLdapService(t *testing.T, client ldapClient) (*Service, *gorm.DB) {
 	userService := service.NewUserService(
 		db,
 		nil,
-		nil,
 		service.NewCustomClaimService(db),
 		service.NewAppImagesService(map[string]string{}, fileStorage),
 		nil,
 		nil,
 		fileStorage,
+		nil,
 	)
 
 	svc := newService(Dependencies{
@@ -546,6 +764,26 @@ func TestNormalizeLDAPDN(t *testing.T) {
 			name:     "multi-valued RDN",
 			input:    "cn=alice+uid=a123,dc=example,dc=com",
 			expected: "cn=alice+uid=a123,dc=example,dc=com",
+		},
+		{
+			name:     "reordered multi-valued RDN",
+			input:    "UID=A123+CN=Alice,dc=example,dc=com",
+			expected: "cn=alice+uid=a123,dc=example,dc=com",
+		},
+		{
+			name:     "escaped comma remains part of the value",
+			input:    `CN=Admin\,OU=Staff,DC=example,DC=com`,
+			expected: `cn=admin\,ou=staff,dc=example,dc=com`,
+		},
+		{
+			name:     "hex-escaped comma shares the same key",
+			input:    `cn=admin\2cou=staff,dc=example,dc=com`,
+			expected: `cn=admin\,ou=staff,dc=example,dc=com`,
+		},
+		{
+			name:     "escaped plus remains part of the value",
+			input:    `cn=admin\+ou=staff,dc=example,dc=com`,
+			expected: `cn=admin\+ou=staff,dc=example,dc=com`,
 		},
 		{
 			name:     "invalid DN falls back to lowercase+trim",

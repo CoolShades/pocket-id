@@ -13,6 +13,8 @@ import (
 
 	"github.com/pocket-id/pocket-id/backend/internal/appconfig"
 	"github.com/pocket-id/pocket-id/backend/internal/apperror"
+	"github.com/pocket-id/pocket-id/backend/internal/auditlogs"
+	"github.com/pocket-id/pocket-id/backend/internal/authz"
 	"github.com/pocket-id/pocket-id/backend/internal/dto"
 	"github.com/pocket-id/pocket-id/backend/internal/httpserver"
 	"github.com/pocket-id/pocket-id/backend/internal/utils"
@@ -37,7 +39,7 @@ func (h *handler) beginRegistration(c *gin.Context) error {
 		return fmt.Errorf("error loading app configuration: %w", err)
 	}
 
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	options, err := h.service.BeginRegistration(c.Request.Context(), dbConfig, userID)
 	if err != nil {
 		return err
@@ -59,7 +61,7 @@ func (h *handler) verifyRegistration(c *gin.Context) error {
 		return apperror.MissingSessionID()
 	}
 
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	credential, err := h.service.VerifyRegistration(c.Request.Context(), dbConfig, sessionID, userID, c.Request, c.ClientIP())
 	if err != nil {
 		return err
@@ -106,7 +108,8 @@ func (h *handler) verifyLogin(c *gin.Context) error {
 		return apperror.InvalidWebAuthnResponse(err)
 	}
 
-	user, token, err := h.service.VerifyLogin(c.Request.Context(), dbConfig, sessionID, credentialAssertionData, c.ClientIP(), c.Request.UserAgent())
+	browserToken, _ := c.Cookie(cookie.KnownBrowserCookieName)
+	user, tokens, err := h.service.VerifyLogin(c.Request.Context(), dbConfig, sessionID, credentialAssertionData, c.ClientIP(), c.Request.UserAgent(), browserToken)
 	if err != nil {
 		return err
 	}
@@ -117,14 +120,17 @@ func (h *handler) verifyLogin(c *gin.Context) error {
 	}
 
 	maxAge := int(dbConfig.SessionDuration.AsDurationMinutes().Seconds())
-	cookie.AddAccessTokenCookie(c, maxAge, token)
+	cookie.AddAccessTokenCookie(c, maxAge, tokens.AccessToken)
+	if tokens.KnownBrowserToken != "" {
+		cookie.AddKnownBrowserCookie(c, tokens.KnownBrowserToken, int(auditlogs.KnownBrowserLifetime.Seconds()))
+	}
 
 	c.JSON(http.StatusOK, userDto)
 	return nil
 }
 
 func (h *handler) listCredentials(c *gin.Context) error {
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	credentials, err := h.service.ListCredentials(c.Request.Context(), userID)
 	if err != nil {
 		return err
@@ -140,7 +146,7 @@ func (h *handler) listCredentials(c *gin.Context) error {
 }
 
 func (h *handler) deleteCredential(c *gin.Context) error {
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	credentialID := c.Param("id")
 	clientIP := c.ClientIP()
 	userAgent := c.Request.UserAgent()
@@ -155,7 +161,7 @@ func (h *handler) deleteCredential(c *gin.Context) error {
 }
 
 func (h *handler) updateCredential(c *gin.Context) error {
-	userID := c.GetString("userID")
+	userID := authz.PrincipalFrom(c).UserID
 	credentialID := c.Param("id")
 
 	var input dto.WebauthnCredentialUpdateDto
